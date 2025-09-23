@@ -1,6 +1,6 @@
-# braw-rs — Safe, modern Rust bindings for the Blackmagic RAW SDK
+# braw-rs - Safe, modern Rust bindings for the Blackmagic RAW SDK
 
-Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** — no bindgen, no `extern "C"`, just idiomatic Rust.
+Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no bindgen, no ffi, just idiomatic Rust.
 
 <p align="center">
   <a href="#"><img alt="License: MIT/Apache-2.0" src="https://img.shields.io/badge/license-MIT%2FApache--2.0-informational"></a>
