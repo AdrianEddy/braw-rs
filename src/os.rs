@@ -27,6 +27,7 @@ mod abi {
     pub struct __CFString(c_void);
     pub type CFStringRef = *const __CFString;
     #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[link(name="CoreFoundation", kind="framework")]
     unsafe extern "C" {
         pub fn CFStringCreateWithBytes(alloc: *const c_void, bytes: *const u8, numBytes: isize, encoding: u32, isExternalRepresentation: bool) -> CFStringRef;
         pub fn CFStringGetCStringPtr(s: CFStringRef, encoding: u32) -> *const i8;

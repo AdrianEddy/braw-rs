@@ -17,7 +17,7 @@ mod variant;  pub use variant::*;
 
 pub fn default_library_name() -> &'static str {
     #[cfg(target_os = "windows")] { "BlackmagicRawAPI.dll" }
-    #[cfg(any(target_os = "macos", target_os = "ios"))] { "libBlackmagicRawAPI.dylib" }
+    #[cfg(any(target_os = "macos", target_os = "ios"))] { "BlackmagicRawAPI.framework/BlackmagicRawAPI" }
     #[cfg(target_os = "linux")] { "libBlackmagicRawAPI.so" }
 }
 
