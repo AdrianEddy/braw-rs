@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 use super::*;
 use std::sync::atomic::{ AtomicU32, Ordering };
 use core::ffi::c_void;

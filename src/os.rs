@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 #[cfg(target_os = "windows")]
 mod abi {
     pub use windows_sys::core::{ BSTR, HRESULT };
@@ -109,3 +112,9 @@ pub(crate) use abi::*;
 pub use abi::HRESULT;
 
 pub(crate) type BlackmagicCreateFn = unsafe extern "C" fn() -> *mut super::IBlackmagicRawFactory;
+
+pub fn default_library_name() -> &'static str {
+    #[cfg(target_os = "windows")] { "BlackmagicRawAPI.dll" }
+    #[cfg(any(target_os = "macos", target_os = "ios"))] { "BlackmagicRawAPI.framework/BlackmagicRawAPI" }
+    #[cfg(target_os = "linux")] { "libBlackmagicRawAPI.so" }
+}

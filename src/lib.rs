@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 #![allow(non_snake_case)]
 
 #![doc = include_str!("../README.md")]
@@ -5,21 +8,15 @@
 use core::ffi::c_void;
 use std::sync::Arc;
 
-mod callback; pub use callback::*;
-mod com;      pub use com::*;
-mod error;    pub use error::*;
-mod future;   pub use future::*;
-mod iterators;pub use iterators::*;
-mod os;       pub use os::*;
-mod sdk;      pub use sdk::*;
-mod string;   pub use string::*;
-mod variant;  pub use variant::*;
-
-pub fn default_library_name() -> &'static str {
-    #[cfg(target_os = "windows")] { "BlackmagicRawAPI.dll" }
-    #[cfg(any(target_os = "macos", target_os = "ios"))] { "BlackmagicRawAPI.framework/BlackmagicRawAPI" }
-    #[cfg(target_os = "linux")] { "libBlackmagicRawAPI.so" }
-}
+mod callback;  pub use callback::*;
+mod com;       pub use com::*;
+mod error;     pub use error::*;
+mod future;    pub use future::*;
+mod iterators; pub use iterators::*;
+mod os;        pub use os::*;
+mod sdk;       pub use sdk::*;
+mod string;    pub use string::*;
+mod variant;   pub use variant::*;
 
 #[cfg(target_os = "windows")]
 use libloading::os::windows as dl;
@@ -144,23 +141,30 @@ impl<'lib> BlackmagicRaw<'lib> {
     }
 
     /// Asynchronously prepares the current pipeline
-    pub async fn prepare_pipeline(&self, pipeline: u32, pipeline_context: *mut c_void, pipeline_command_queue: *mut c_void) -> Result<(), BrawError> {
+    ///
+    /// This function returns a future which needs to be awaited.
+    /// `PreparePipeline` is started immediately when calling this function. You can either `await` the returned future, or use the callback mechanism to get notified when it's done.
+    pub fn prepare_pipeline(&self, pipeline: u32, pipeline_context: *mut c_void, pipeline_command_queue: *mut c_void) -> Result<CallbackFuture<()>, BrawError> {
         let state = std::sync::Arc::new(State::<()>::new());
 
         let _ = self.raw.PreparePipeline(pipeline, pipeline_context, pipeline_command_queue, Arc::as_ptr(&state) as *mut c_void)?;
 
-        CallbackFuture { state, job: None }.await
+        Ok(CallbackFuture { state, job: None })
     }
 
     /// Asynchronously prepares the current pipeline
-    pub async fn prepare_pipeline_for_device(&self, device: BlackmagicRawPipelineDevice<'lib>) -> Result<(), BrawError> {
+    ///
+    /// This function returns a future which needs to be awaited.
+    /// `PreparePipeline` is started immediately when calling this function. You can either `await` the returned future, or use the callback mechanism to get notified when it's done.
+    pub fn prepare_pipeline_for_device(&self, device: BlackmagicRawPipelineDevice<'lib>) -> Result<CallbackFuture<()>, BrawError> {
         let state = std::sync::Arc::new(State::<()>::new());
         let _ = self.raw.PreparePipelineForDevice(device.as_raw(), Arc::as_ptr(&state) as *mut c_void)?;
-        CallbackFuture { state, job: None }.await
+        Ok(CallbackFuture { state, job: None })
     }
 }
 
 impl<'lib> BlackmagicRawClip<'lib> {
+    /// Returns an iterator over the metadata entries in the clip
     pub fn metadata_iter(&self) -> Result<MetadataIterator<'lib>, BrawError> {
         let mut out = std::ptr::null_mut();
         match self.raw.GetMetadataIterator(&mut out) {

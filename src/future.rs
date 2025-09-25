@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 use std::{ future::Future, pin::Pin, sync::{ atomic::{ AtomicBool, Ordering}, Arc, Mutex }, task::{ Context, Poll }};
 use futures_util::task::AtomicWaker;
 use core::ffi::c_void;

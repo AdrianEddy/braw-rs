@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 use super::*;
-
-
 
 pub struct MetadataIterator<'lib> {
     pub(crate) raw: ComPtr<IBlackmagicRawMetadataIterator>,
@@ -90,6 +91,7 @@ impl<'lib> Iterator for PipelineIterator<'lib> {
 }
 
 ///////////////////////////////////////////////////////
+
 use std::sync::atomic::AtomicUsize;
 pub struct PipelineDeviceIteratorItem<'lib> {
     pub interop: BlackmagicRawInterop,

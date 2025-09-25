@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
 use core::ffi::c_void;
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]

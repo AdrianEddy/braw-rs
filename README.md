@@ -16,7 +16,7 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * **Async jobs, no callbacks**: futures replace C++-style callbacks, making async jobs intuitive.
 * **Proper error handling**.
 * **Idiomatic iterators & enums**.
-* **Async-runtime agnostic**: works with any executor; use `pollster` to block when you want simplicity.
+* **Async runtime agnostic**: works with any executor; use `pollster` to block when you want simplicity.
 * **Native docs**: all structs and enums are documented based on the official SDK documentation pdf
 * **Cross-platform**: Windows, Linux, macOS, and iOS.
 
@@ -110,7 +110,7 @@ This crate **does not link** to the SDK at build time. At runtime it uses `liblo
 ## FAQ
 
 **Why not use bindgen?**
-The BRAW SDK is based on C++ COM object model. Using bindgen means writing a lot of boilerplate in C to make ffi with Rust happy. Instead of doing the boilerplate in C, I decided to just implement it directly in Rust. This also gives us safer types and easier implementation of idiomatic Rust constructs like async.
+BRAW SDK is based on the C++ COM object model. If we want to use bindgen we'd need to write a lot of boilerplate in C to make ffi with Rust possible. Instead of doing the boilerplate in C, I decided to just implement COM directly in Rust. This also gives us safer types and easier implementation of idiomatic Rust constructs like async.
 
 **Can I block instead of going async?**
 Yes. Use `pollster::block_on` or your runtime’s `block_on`.
