@@ -53,11 +53,15 @@ impl RawLibrary {
                     #[cfg(any(target_os = "macos", target_os = "ios"))] {
                         let cf = v.Anonymous.Anonymous.Anonymous.bstrVal as CFStringRef;
                         let tmp = BrawString(cf);
-                        VariantValue::String(tmp.to_string())
+                        let string = tmp.to_string();
+                        std::mem::forget(tmp); // Don't free the CFString here, it will be free by VariantClear
+                        VariantValue::String(string)
                     }
                     #[cfg(target_os = "linux")] {
                         let p = v.Anonymous.Anonymous.Anonymous.bstrVal as *mut i8;
-                        if p.is_null() { VariantValue::String(String::new()) } else {
+                        if p.is_null() {
+                            VariantValue::String(String::new())
+                        } else {
                             VariantValue::String(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
                         }
                     }
