@@ -31,9 +31,9 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * Install **Blackmagic RAW SDK** for your platform.
 * Ensure the SDK library is discoverable at runtime:
 
-  * **Windows**: `BlackmagicRAWAPI.dll` in the executable dir or on `PATH`.
-  * **Linux**: `libBlackmagicRAWAPI.so` on `LD_LIBRARY_PATH` or `rpath`.
-  * **macOS/iOS**: `libBlackmagicRAWAPI.dylib` in `@rpath` or `Frameworks`.
+  * **Windows**: `BlackmagicRawAPI.dll` in the executable dir or on `PATH`.
+  * **Linux**: `libBlackmagicRawAPI.so` on `LD_LIBRARY_PATH` or `rpath`.
+  * **macOS/iOS**: `BlackmagicRawAPI.framework` in `@rpath` or `Frameworks`.
 
 ### Cargo
 
