@@ -430,11 +430,11 @@ braw_interface! {
         /// Blocking call which will only return once all jobs have been completed
         fn FlushJobs() -> HRESULT;
     }
-    field callback: CallbackHandle<DefaultCallback>,
     /// Each codec interface will have its own memory storage and decoder.
     ///
     /// When decoding multiple clips via one codec, first in first out ordering will apply.
     /// This is the main interface for working with Blackmagic RAW files.
+    #[derive(Clone)]
     impl {
         void FlushJobs => fn flush_jobs(&mut Self); /// Blocking call which will only return once all jobs have been completed
         interface fn configuration(&self) -> BlackmagicRawConfiguration; /// Get the configuration interface for this codec
@@ -474,6 +474,7 @@ braw_interface! {
     /// Use this to determine pipelines available for use on the system.
     ///
     /// Iterates through available processing pipelines (CPU, CUDA, Metal, OpenCL) that are supported on the current system.
+    #[derive(Clone)]
     impl {
         scalar GetName     => fn name(&Self) -> String; /// Get the name of the pipeline
         scalar GetInterop  => fn interop(&Self) -> BlackmagicRawInterop; /// Get the interoperability of the pipeline
@@ -496,6 +497,7 @@ braw_interface! {
     /// Use this to determine pipeline devices available for use on the system.
     ///
     /// Iterates through available devices for a specific pipeline type, such as multiple GPUs for CUDA or Metal pipelines.
+    #[derive(Clone)]
     impl {
         struct CreateDevice => fn create_device(&Self) -> BlackmagicRawPipelineDevice; /// Create the pipeline device
         scalar GetInterop   => fn interop(&Self) -> BlackmagicRawInterop; /// Get the interoperability of the device's pipeline
@@ -514,6 +516,7 @@ braw_interface! {
     /// Helper interface for OpenGL interoperability.
     ///
     /// Provides functionality to copy processed images into OpenGL textures for direct GPU rendering without CPU roundtrip.
+    #[derive(Clone)]
     impl {
         scalar GetPreferredResourceFormat => fn preferred_resource_format(&Self) -> BlackmagicRawResourceFormat; /// Gets the preferred resource format for OpenGL interop
         scalar2 SetImage                  => fn set_image(&mut Self, processed_image: BlackmagicRawProcessedImage) -> (u32, i32); /// Copies the processed image into an OpenGL texture, returns (texture name, texture target)
@@ -550,6 +553,7 @@ braw_interface! {
     /// This object is provided so the user need not deal directly with the underlying compute API
     /// in order to provide context and command queue to the codec configuration. The device instance
     /// MUST outlive that of the codec instance on which the device is used.
+    #[derive(Clone)]
     impl {
         struct GetOpenGLInteropHelper=> fn opengl_interop_helper(&Self) -> BlackmagicRawOpenGLInteropHelper; /// Creates an OpenGL interop helper
         scalar GetInstructionSet     => fn instruction_set(&Self) -> BlackmagicRawInstructionSet; /// Gets the CPU instruction set
@@ -575,6 +579,7 @@ braw_interface! {
     /// Functions which provide useful tone curve operations.
     ///
     /// If desired, the user application can cache these results.
+    #[derive(Clone)]
     impl {
         // custom impl GetToneCurve
         // custom impl EvaluateToneCurve
@@ -610,6 +615,7 @@ braw_interface! {
     ///
     /// The configuration properties are read when the first call to OpenClip() occurs.
     /// After this configuration properties should not be changed, and changes will be ignored.
+    #[derive(Clone)]
     impl {
         scalar GetVersion              => fn version(&Self) -> String; /// Get the Blackmagic RAW SDK version
         scalar GetCameraSupportVersion => fn camera_support_version(&Self) -> String; /// Get the camera support version
@@ -643,6 +649,7 @@ braw_interface! {
     /// Extended Configuration for Codec Object.
     ///
     /// Provides additional configuration options beyond the basic configuration interface.
+    #[derive(Clone)]
     impl {
         struct GetResourceManager => fn resource_manager(&Self) -> BlackmagicRawResourceManager; /// Get the current resource manager
         scalar GetInstructionSet  => fn instruction_set(&Self) -> BlackmagicRawInstructionSet; /// Get the CPU instruction set
@@ -671,6 +678,7 @@ braw_interface! {
     /// Geometry properties of Clip object.
     ///
     /// Controls rotation, flip, and anamorphic properties of the clip.
+    #[derive(Clone)]
     impl {
         scalar GetAnamorphicRatio => fn anamorphic_ratio(&Self) -> BlackmagicRawAnamorphicRatio; /// Get the anamorphic ratio
         scalar GetRotation        => fn rotation(&Self) -> BlackmagicRawRotation; /// Get the rotation state
@@ -696,6 +704,7 @@ braw_interface! {
     ///
     /// Using this interface the user can create their own Resource manager to allow ownership
     /// over resource allocations. An internal resource manager that implements this interface is provided by default.
+    #[derive(Clone)]
     impl {
         scalar CreateResource      => fn create_resource(&Self, context: *mut c_void, command_queue: *mut c_void, size_bytes: u32, typ: BlackmagicRawResourceType, usage: BlackmagicRawResourceUsage) -> *mut c_void; /// Create a new resource
         scalar GetResourceHostPointer => fn resource_host_pointer(&Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, resource_type: BlackmagicRawResourceType) -> *mut c_void; /// Get host pointer to resource
@@ -716,6 +725,7 @@ braw_interface! {
     /// Iterating metadata.
     ///
     /// Allows iteration through all metadata key-value pairs in a clip or frame.
+    #[derive(Clone)]
     impl {
         scalar GetKey  => fn key(&Self) -> String; /// Get the metadata key
         scalar GetData => fn data(&Self) -> VariantValue; /// Get the metadata value
@@ -799,6 +809,7 @@ braw_interface! {
     ///
     /// This object provides additional information about LUTs and gives
     /// user the ability to control the lifetime of the resource.
+    #[derive(Clone)]
     impl {
         scalar GetName          => fn name         (&Self) -> String; /// Get the LUT name
         scalar GetTitle         => fn title        (&Self) -> String; /// Get the LUT title
@@ -830,6 +841,7 @@ braw_interface! {
     /// Processed image ready to display.
     ///
     /// This object is created by the API and provided via a ProcessComplete() callback.
+    #[derive(Clone)]
     impl {
         scalar GetWidth             => fn width              (&Self) -> u32; /// Get image width in pixels
         scalar GetHeight            => fn height             (&Self) -> u32; /// Get image height in pixels
@@ -856,6 +868,7 @@ braw_interface! {
     ///
     /// This is the base object that is returned when any job is created with the SDK.
     /// Use this to control and identify jobs when callbacks occur.
+    #[derive(Clone)]
     impl {
         scalar GetUserData => fn user_data(&Self) -> *mut c_void; /// Get attached user data
         void SetUserData   => fn set_user_data(&mut Self, user_data: *mut c_void); /// Set user data
@@ -880,6 +893,7 @@ braw_interface! {
     ///
     /// This object can be used to provide optimisation hints to the read job,
     /// such as specifying the scale at which to perform the read.
+    #[derive(Clone)]
     impl {
         void SetReaderResolutionScale => fn set_reader_resolution_scale(&mut Self, reader_resolution_scale: BlackmagicRawResolutionScale); /// Set the scale for reading
     }
@@ -928,6 +942,7 @@ braw_interface! {
     /// Audio component for an opened movie clip.
     ///
     /// Interface for accessing a clip's audio data.
+    #[derive(Clone)]
     impl {
         scalar GetAudioFormat       => fn audio_format      (&Self) -> BlackmagicRawAudioFormat; /// Get audio format
         scalar GetAudioBitDepth     => fn audio_bit_depth   (&Self) -> u32; /// Get bit depth
@@ -952,6 +967,7 @@ braw_interface! {
     /// Accelerometer motion for an opened movie clip.
     ///
     /// Interface for accessing a clip's accelerometer motion data.
+    #[derive(Clone)]
     impl {
         scalar GetSampleRate  => fn sample_rate (&Self) -> f32; /// Get sample rate in Hz
         scalar GetSampleCount => fn sample_count(&Self) -> u32; /// Get total sample count
@@ -974,6 +990,7 @@ braw_interface! {
     /// Gyroscope motion for an opened movie clip.
     ///
     /// Interface for accessing a clip's gyroscope motion data.
+    #[derive(Clone)]
     impl {
         scalar GetSampleRate  => fn sample_rate (&Self) -> f32; /// Get sample rate in Hz
         scalar GetSampleCount => fn sample_count(&Self) -> u32; /// Get total sample count
@@ -1000,6 +1017,7 @@ braw_interface! {
     /// Phase detection autofocus data for an opened movie clip.
     ///
     /// Interface for accessing a clip's phase detection autofocus data.
+    #[derive(Clone)]
     impl {
         scalar GetSampleImageWidthInPixels  => fn sample_image_width_in_pixels (&Self) -> u32; /// Get image width
         scalar GetSampleImageHeightInPixels => fn sample_image_height_in_pixels(&Self) -> u32; /// Get image height
@@ -1025,11 +1043,11 @@ braw_interface! {
         /// Creates object with current frame processing attributes
         fn CloneFrameProcessingAttributes(frameProcessingAttributes: *mut *mut IBlackmagicRawFrameProcessingAttributes) -> HRESULT;
         /// Set the resolution scale we want to decode this image to
-        fn SetResolutionScale(resolutionScale: BlackmagicRawResolutionScale ) -> HRESULT;
+        fn SetResolutionScale(resolutionScale: BlackmagicRawResolutionScale) -> HRESULT;
         /// Get the resolution scale set to the frame
         fn GetResolutionScale(resolutionScale: *mut BlackmagicRawResolutionScale) -> HRESULT;
         /// Set the desired resource format that we want to process this frame into
-        fn SetResourceFormat(resourceFormat: BlackmagicRawResourceFormat ) -> HRESULT;
+        fn SetResourceFormat(resourceFormat: BlackmagicRawResourceFormat) -> HRESULT;
         /// Get the resource format this frame will be processed into
         fn GetResourceFormat(resourceFormat: *mut BlackmagicRawResourceFormat) -> HRESULT;
         /// Get the sensor rate with which this frame was recorded
@@ -1041,6 +1059,7 @@ braw_interface! {
     ///
     /// A frame that has been read but not yet processed. This is returned in the ReadComplete() callback.
     /// From here the user should prepare the frame for processing, and call DecodeAndProcessFrame().
+    #[derive(Clone)]
     impl {
         struct CloneFrameProcessingAttributes => fn clone_frame_processing_attributes(&Self) -> BlackmagicRawFrameProcessingAttributes; /// Clone frame processing attributes
         scalar GetFrameIndex                  => fn frame_index(&Self) -> u64; /// Get the frame index
@@ -1068,6 +1087,7 @@ braw_interface! {
     /// Provides extra information for use with IBlackmagicRawManualDecoder.
     ///
     /// Query additional information for the frame that is useful when decoding via manual decoders.
+    #[derive(Clone)]
     impl {
         scalar GetBitStreamSizeBytes        => fn bit_stream_size_bytes(&Self) -> u32; /// Get bitstream size in bytes
         scalar2 GetProcessedImageResolution => fn processed_image_resolution(&Self) -> (u32, u32); /// Get processed image resolution (width, height)
@@ -1082,6 +1102,7 @@ braw_interface! {
     /// Provides extra information related to frames from multi video track files.
     ///
     /// Query multi video track related information for the frame.
+    #[derive(Clone)]
     impl {
         scalar GetVideoTrackIndex => fn video_track_index(&Self) -> u32; /// Get video track index
     }
@@ -1108,6 +1129,7 @@ braw_interface! {
     ///
     /// Manual decoders give you more control over which buffers are used and how things are queued.
     /// Note: these decoders are optional and targeted at advanced users.
+    #[derive(Clone)]
     impl {
         scalar GetFrameStateSizeBytes => fn frame_state_size_bytes(&Self) -> u32; /// Get frame state buffer size
         // TODO custom impl GetDecodedSizeBytes
@@ -1143,6 +1165,7 @@ braw_interface! {
     /// Manual decoders give you more control over which buffers are used and how things are queued.
     /// This will likely be faster than Flow1, however it will depend on the GPU in the users system.
     /// Note: these decoders are optional and targeted at advanced users.
+    #[derive(Clone)]
     impl {
         scalar GetFrameStateSizeBytes => fn frame_state_size_bytes(&Self) -> u32; /// Get frame state buffer size
         // TODO custom impl GetDecodedSizeBytes
@@ -1197,6 +1220,7 @@ braw_interface! {
     ///
     /// Clip object created by calling IBlackmagicRaw::OpenClip(). Represents an opened
     /// Blackmagic RAW file and provides access to its frames, metadata, and processing attributes.
+    #[derive(Clone)]
     impl {
         struct CloneClipProcessingAttributes => fn clone_clip_processing_attributes(&Self) -> BlackmagicRawClipProcessingAttributes; /// Clone clip processing attributes
         struct CloneWithGeometry             => fn clone_with_geometry(&Self, geometry: BlackmagicRawClipGeometry) -> BlackmagicRawClip; /// Clone with new geometry
@@ -1240,6 +1264,7 @@ braw_interface! {
     /// Extended use of IBlackmagicRawClip, to pass custom bitstream.
     ///
     /// Provides advanced functionality for working with bitstreams and timecode information.
+    #[derive(Clone)]
     impl {
         scalar GetMaxBitStreamSizeBytes => fn max_bit_stream_size_bytes(&Self) -> u32; /// Get maximum bitstream size
         scalar GetBitStreamSizeBytes    => fn bit_stream_size_bytes(&Self, frame_index: u64) -> u32; /// Get bitstream size for frame
@@ -1266,6 +1291,7 @@ braw_interface! {
     /// Extended use of IBlackmagicRawClip, to support multi video track video clips.
     ///
     /// Provides access to multiple video tracks within a single Blackmagic RAW file.
+    #[derive(Clone)]
     impl {
         scalar GetVideoTrackCount  => fn video_track_count (&Self) -> u32; /// Get number of video tracks
         scalar GetVideoFrameCount  => fn video_frame_count (&Self, video_track_index: u32) -> u64; /// Get frame count for track
@@ -1296,6 +1322,7 @@ braw_interface! {
     /// Extended use of IBlackmagicRawClip, to support immersive video clips.
     ///
     /// Provides access to stereoscopic/immersive video features including left/right eye tracks.
+    #[derive(Clone)]
     impl {
         scalar GetDistanceBetweenLenses       => fn distance_between_lenses       (&Self) -> u32; /// Get lens separation in micrometers
         scalar GetComfortDisparityAdjustment  => fn comfort_disparity_adjustment  (&Self) -> i32; /// Get disparity adjustment
@@ -1323,6 +1350,7 @@ braw_interface! {
     /// Supports querying of resolutions and/or scales for processed image results.
     ///
     /// Allows querying available resolutions for processing based on hardware capabilities.
+    #[derive(Clone)]
     impl {
         scalar GetResolutionCount            => fn resolution_count            (&Self) -> u32; /// Get number of available resolutions
         scalar GetClosestScaleForResolution  => fn closest_scale_for_resolution(&Self, resolution_width_pixels: u32, resolution_height_pixels: u32) -> BlackmagicRawResolutionScale; /// Get closest scale for resolution

@@ -35,16 +35,16 @@ impl GUID {
 
 // Platform-correct QueryInterface signature: pointer on Windows, by-value REFIID elsewhere
 #[cfg(target_os = "windows")]
-pub type QueryInterfaceFn = unsafe extern "C" fn(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT;
+pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT;
 #[cfg(not(target_os = "windows"))]
-pub type QueryInterfaceFn = unsafe extern "C" fn(this: *mut c_void, riid: GUID, ppv: *mut *mut c_void) -> HRESULT;
+pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: GUID, ppv: *mut *mut c_void) -> HRESULT;
 
 #[repr(C)]
 #[allow(non_snake_case)]
 pub struct IUnknownVTbl {
     pub QueryInterface: QueryInterfaceFn,
-    pub AddRef: unsafe extern "C" fn(this: *mut c_void) -> u32,
-    pub Release: unsafe extern "C" fn(this: *mut c_void) -> u32,
+    pub AddRef: unsafe extern "system" fn(this: *mut c_void) -> u32,
+    pub Release: unsafe extern "system" fn(this: *mut c_void) -> u32,
 }
 
 #[macro_export]
@@ -96,7 +96,7 @@ macro_rules! braw_interface {
             pub struct [<I $name VTbl>] {
                 pub parent: IUnknownVTbl,
 
-                $($(#[$fn_meta])* pub $m: unsafe extern "C" fn(this: *mut c_void, $($argn : $argt),*) -> $ret, )*
+                $($(#[$fn_meta])* pub $m: unsafe extern "system" fn(this: *mut c_void, $($argn : $argt),*) -> $ret, )*
             }
             impl ComPtr<[<I $name>]> {
                 $(
@@ -122,24 +122,30 @@ macro_rules! braw_interface {
 
             $(
                 $(#[$implmeta])*
-                pub struct $name<'lib> {
+                pub struct $name {
                     pub raw: ComPtr<[<I $name>]>,
-                    pub lib: &'lib RawLibrary,
                     $( pub(crate) $field : $field_type, )*
+
+                    #[allow(dead_code)]
+                    pub(crate) parent_guards: DropOrderVec<ComPtrRefGuard>,
+
+                    // Factory always last, to ensure it outlives all other references
+                    pub factory: Factory,
                 }
-                impl<'lib> $name<'lib> {
+                impl $name {
                     /// Get the raw COM interface pointer
                     pub fn as_raw(&self) -> *mut [<I $name>] { self.raw.as_raw() }
 
                 $(
                     $(#[$impl_meta])*
-                    pub fn $impl_m(self: $impl_self, $($impl_argn : braw_interface!(@iarg $impl_argt)),*) -> Result<$impl_ret<'lib>, BrawError> {
+                    pub fn $impl_m(self: $impl_self, $($impl_argn : braw_interface!(@iarg $impl_argt)),*) -> Result<$impl_ret, BrawError> {
                         unsafe {
                             let mut out: *mut [<I $impl_ret>] = std::mem::zeroed();
                             let _hr = self.raw.$impl_cm($(braw_interface!(@iargpass self; $impl_argt,$impl_argn),)* &mut out)?;
                             Ok($impl_ret {
                                 raw: ComPtr::new(out)?,
-                                lib: self.lib
+                                factory: self.factory.clone(),
+                                parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()),
                             })
                         }
                     }
@@ -184,13 +190,13 @@ macro_rules! braw_interface {
                 )*
                 $(
                     $(#[$impli_meta])*
-                    pub fn $impli_m<'codec>(&'codec self) -> Result<$impli_cm<'codec>, BrawError> {
+                    pub fn $impli_m(&self) -> Result<$impli_cm, BrawError> {
                         let mut ptr = std::ptr::null_mut();
                         let hr = unsafe { ((*self.raw.vtbl).parent.QueryInterface)(self.raw.as_raw() as _, [<I $impli_cm>]::iid(), &mut ptr) };
                         check_hr(hr)?;
                         let com = ComPtr::new(ptr as *mut [<I $impli_cm>])?;
 
-                        Ok($impli_cm { raw: com, lib: self.lib })
+                        Ok($impli_cm { raw: com, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
                     }
                 )*
                 }
@@ -207,14 +213,14 @@ macro_rules! braw_interface {
     (@iargpass $self:ident; BlackmagicRawProcessedImage,$e:expr) => { $e.as_raw() };
     (@iargpass $self:ident; BlackmagicRawResourceManager,$e:expr) => { $e.as_raw() };
     (@iargpass $self:ident; BlackmagicRawPipelineDevice,$e:expr) => { $e.as_raw() };
-    (@iargpass $self:ident; VariantValue,$e:expr) => { $self.lib.variant_from_rust($e).as_raw() };
+    (@iargpass $self:ident; VariantValue,$e:expr) => { $self.factory.lib.variant_from_rust($e).as_raw() };
     (@iargpass $self:ident; $t:ty,$e:expr) => { $e };
 
     (@iargpassret String) => { *mut c_void };
     (@iargpassret VariantValue) => { VARIANT };
     (@iargpassret $t:ty) => { $t };
     (@iargpassret2 $self:ident; String,$o:expr) => { BrawString($o as *mut _).to_string() };
-    (@iargpassret2 $self:ident; VariantValue,$o:expr) => { $self.lib.variant_to_rust($o) };
+    (@iargpassret2 $self:ident; VariantValue,$o:expr) => { $self.factory.lib.variant_to_rust($o) };
     (@iargpassret2 $self:ident; $t:ty,$o:expr) => { $o };
 }
 
@@ -223,12 +229,13 @@ macro_rules! braw_interface {
 macro_rules! braw_out_ptr {
     ($expr:expr $(, $arg:expr)*) => {{
         let mut tmp = std::ptr::null_mut();
-        let hr = $expr($($arg,)* &mut tmp as *mut _ )?;
+        let hr = $expr($($arg,)* &mut tmp)?;
         check_hr(hr)?;
         ComPtr::new(tmp)?
     }};
 }
 
+#[repr(C)]
 pub struct ComPtr<T> { ptr: NonNull<T> }
 impl<T> ComPtr<T> {
     pub fn new(nn: *mut T) -> Result<Self, BrawError> { Ok(Self { ptr: NonNull::new(nn).ok_or(BrawError::NullValue)? }) }
@@ -257,6 +264,10 @@ impl<T> ComPtr<T> {
     pub unsafe fn release(&mut self) {
         unsafe { (self.get_iunknown_vtbl().Release)(self.ptr.as_ptr() as *mut c_void); }
     }
+    pub(crate) fn add_ref_and_get_guard(&self) -> ComPtrRefGuard {
+        unsafe { (self.get_iunknown_vtbl().AddRef)(self.ptr.as_ptr() as *mut c_void); }
+        ComPtrRefGuard { ptr: self.ptr.as_ptr() as *mut c_void, name: std::any::type_name::<T>()}
+    }
     unsafe fn get_iunknown_vtbl(&self) -> &IUnknownVTbl {
         // Safety: every COM interface starts with IUnknown vtbl
         unsafe {
@@ -270,4 +281,51 @@ impl<T> Deref for ComPtr<T> {
 }
 impl<T> DerefMut for ComPtr<T> {
     fn deref_mut(&mut self) -> &mut Self::Target { unsafe { self.ptr.as_mut() } }
+}
+
+pub(crate) struct ComPtrRefGuard {
+    ptr: *mut c_void,
+    name: &'static str,
+}
+impl Clone for ComPtrRefGuard {
+    fn clone(&self) -> Self {
+        unsafe {
+            if !self.ptr.is_null() {
+                let vtbl = &**(self.ptr as *mut *const IUnknownVTbl);
+                (vtbl.AddRef)(self.ptr);
+            }
+            ComPtrRefGuard { ptr: self.ptr, name: self.name }
+        }
+    }
+}
+impl Drop for ComPtrRefGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ptr.is_null() {
+                let vtbl = &**(self.ptr as *mut *const IUnknownVTbl);
+                (vtbl.Release)(self.ptr);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DropOrderVec<T: Clone>(pub Vec<T>);
+impl<T: Clone> DropOrderVec<T> {
+    pub fn clone_and_add(&self, v: T) -> Self {
+        let mut guards = self.clone();
+        guards.0.push(v);
+        guards
+    }
+}
+impl<T: Clone> Drop for DropOrderVec<T> {
+    fn drop(&mut self) {
+        // Deterministic drop order: back -> front (LIFO)
+        while self.0.pop().is_some() { }
+    }
+}
+impl<T: Clone> From<Vec<T>> for DropOrderVec<T> {
+    fn from(arr: Vec<T>) -> Self {
+        DropOrderVec(arr)
+    }
 }

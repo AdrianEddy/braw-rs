@@ -42,7 +42,7 @@ unsafe fn cb_from_this<T: BrawCallback>(this: *mut c_void) -> *mut CallbackBox<T
 }
 
 // IUnknown — signatures must match platform
-unsafe extern "C" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
     const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
     unsafe {
         if ppv.is_null() { return E_POINTER; }
@@ -60,12 +60,12 @@ unsafe extern "C" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterf
     0x80004002u32 as i32 // E_NOINTERFACE
 }
 
-unsafe extern "C" fn cb_addref<T: BrawCallback>(this: *mut c_void) -> u32 {
+unsafe extern "system" fn cb_addref<T: BrawCallback>(this: *mut c_void) -> u32 {
     let me = unsafe { &*cb_from_this::<T>(this) };
     me.refcnt.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-unsafe extern "C" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 {
+unsafe extern "system" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 {
     unsafe {
         let me = &*cb_from_this::<T>(this);
         let prev = me.refcnt.fetch_sub(1, Ordering::Release);
@@ -79,28 +79,28 @@ unsafe extern "C" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 {
     }
 }
 
-unsafe extern "C" fn cb_read_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
+unsafe extern "system" fn cb_read_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
     unsafe { (*cb_from_this::<T>(this)).state.read_complete(job, result, frame); }
 }
-unsafe extern "C" fn cb_decode_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
+unsafe extern "system" fn cb_decode_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
     unsafe { (*cb_from_this::<T>(this)).state.decode_complete(job, result); }
 }
-unsafe extern "C" fn cb_process_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
+unsafe extern "system" fn cb_process_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
     unsafe { (*cb_from_this::<T>(this)).state.process_complete(job, result, processed_image); }
 }
-unsafe extern "C" fn cb_trim_progress<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, progress: f32) {
+unsafe extern "system" fn cb_trim_progress<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, progress: f32) {
     unsafe { (*cb_from_this::<T>(this)).state.trim_progress(job, progress); }
 }
-unsafe extern "C" fn cb_trim_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
+unsafe extern "system" fn cb_trim_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
     unsafe { (*cb_from_this::<T>(this)).state.trim_complete(job, result); }
 }
-unsafe extern "C" fn cb_sidecar_metadata_parse_warning<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
+unsafe extern "system" fn cb_sidecar_metadata_parse_warning<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
     unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_warning(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); }
 }
-unsafe extern "C" fn cb_sidecar_metadata_parse_error<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
+unsafe extern "system" fn cb_sidecar_metadata_parse_error<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
     unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_error(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); }
 }
-unsafe extern "C" fn cb_prepare_pipeline_complete<T: BrawCallback>(this: *mut c_void, user_data: *mut c_void, result: HRESULT) {
+unsafe extern "system" fn cb_prepare_pipeline_complete<T: BrawCallback>(this: *mut c_void, user_data: *mut c_void, result: HRESULT) {
     unsafe { (*cb_from_this::<T>(this)).state.prepare_pipeline_complete(user_data, result); }
 }
 
@@ -184,6 +184,9 @@ impl BrawCallback for DefaultCallback {
     }
     fn prepare_pipeline_complete(&self, user_data: *mut c_void, result: HRESULT) {
         if user_data.is_null() {
+            if let Some(cb) = &self.user_callback {
+                cb.prepare_pipeline_complete(user_data, result);
+            }
             return;
         }
         // Safety: `user_data` points to the State inside an Arc held by the Future.

@@ -3,12 +3,15 @@
 
 use super::*;
 
-pub struct MetadataIterator<'lib> {
+pub struct MetadataIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawMetadataIterator>,
     pub(crate) is_first: bool,
-    pub(crate) lib: &'lib RawLibrary,
+
+    #[allow(dead_code)]
+    pub(crate) parent_guards: DropOrderVec<ComPtrRefGuard>,
+    pub(crate) factory: Factory,
 }
-impl<'lib> Iterator for MetadataIterator<'lib> {
+impl Iterator for MetadataIterator {
     type Item = (String, VariantValue);
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
@@ -29,12 +32,12 @@ impl<'lib> Iterator for MetadataIterator<'lib> {
         let value;
         unsafe {
             let mut var: VARIANT = std::mem::zeroed();
-            let _lib = self.lib;
+            let _lib = &self.factory.lib;
             #[cfg(not(target_os = "windows"))] let VariantInit  = |a| -> HRESULT { (_lib.VariantInit)(a) };
 
             VariantInit(&mut var);
             self.raw.GetData(&mut var).ok()?;
-            value = self.lib.variant_to_rust(var);
+            value = self.factory.lib.variant_to_rust(var);
         }
 
         Some((
@@ -55,12 +58,12 @@ pub struct PipelineIteratorItem {
 }
 
 #[allow(dead_code)]
-pub struct PipelineIterator<'lib> {
+pub struct PipelineIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawPipelineIterator>,
     pub(crate) is_first: bool,
-    pub(crate) lib: &'lib RawLibrary,
+    pub(crate) factory: Factory,
 }
-impl<'lib> Iterator for PipelineIterator<'lib> {
+impl Iterator for PipelineIterator {
     type Item = PipelineIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
@@ -93,34 +96,34 @@ impl<'lib> Iterator for PipelineIterator<'lib> {
 ///////////////////////////////////////////////////////
 
 use std::sync::atomic::AtomicUsize;
-pub struct PipelineDeviceIteratorItem<'lib> {
+pub struct PipelineDeviceIteratorItem {
     pub interop: BlackmagicRawInterop,
     pub pipeline: BlackmagicRawPipeline,
 
     index: usize,
     iter_index: Arc<AtomicUsize>,
     raw: ComPtr<IBlackmagicRawPipelineDeviceIterator>,
-    lib: &'lib RawLibrary,
+    factory: Factory,
 }
-impl<'lib> PipelineDeviceIteratorItem<'lib> {
-    pub fn create_device(&self) -> Result<BlackmagicRawPipelineDevice<'lib>, BrawError> {
+impl PipelineDeviceIteratorItem {
+    pub fn create_device(&self) -> Result<BlackmagicRawPipelineDevice, BrawError> {
         let mut ptr = std::ptr::null_mut();
         if self.index != self.iter_index.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(BrawError::Other("Devices cannot be created out of order from the iterator".into()));
         }
         let _ = self.raw.CreateDevice(&mut ptr)?;
-        Ok(BlackmagicRawPipelineDevice { raw: ComPtr::new(ptr)?, lib: self.lib } )
+        Ok(BlackmagicRawPipelineDevice { raw: ComPtr::new(ptr)?, factory: self.factory.clone(), parent_guards: vec![].into() } )
     }
 }
 
-pub struct PipelineDeviceIterator<'lib> {
+pub struct PipelineDeviceIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawPipelineDeviceIterator>,
     pub(crate) is_first: bool,
-    pub(crate) lib: &'lib RawLibrary,
+    pub(crate) factory: Factory,
     pub(crate) current_index: Arc<AtomicUsize>,
 }
-impl<'lib> Iterator for PipelineDeviceIterator<'lib> {
-    type Item = PipelineDeviceIteratorItem<'lib>;
+impl Iterator for PipelineDeviceIterator {
+    type Item = PipelineDeviceIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
             match self.raw.Next() {
@@ -148,7 +151,7 @@ impl<'lib> Iterator for PipelineDeviceIterator<'lib> {
             raw: self.raw.clone(),
             index: current_index,
             iter_index: self.current_index.clone(),
-            lib: self.lib,
+            factory: self.factory.clone(),
         })
     }
 }

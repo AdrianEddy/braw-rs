@@ -71,71 +71,82 @@ impl RawLibrary {
 /// Use this to create one or more Codec objects.
 ///
 /// The factory is the entry point for creating Blackmagic RAW codec instances and iterating available processing pipelines.
+#[derive(Clone)]
 pub struct Factory {
     factory: ComPtr<IBlackmagicRawFactory>,
+
+    // Keep the default callback here to ensure it outlives any codecs created from this factory
+    default_callback: Arc<CallbackHandle<DefaultCallback>>,
+
     // This must be last
-    lib: RawLibrary
+    // Arc is used because this may potentially be cloned from the callback, which is called from a different thread
+    lib: Arc<RawLibrary>
 }
 
 impl Factory {
     pub fn load_from(path: impl AsRef<std::path::Path>) -> Result<Self, BrawError> {
         let lib = RawLibrary::load(path.as_ref())?;
         let factory = lib.create_factory()?;
-        Ok(Self { lib, factory })
+        let default_callback = Arc::new(CallbackHandle::new(DefaultCallback::default()));
+        Ok(Self {
+            lib: Arc::new(lib),
+            factory,
+            default_callback
+        })
     }
 
     /// Create a codec from the factory
-    pub fn create_codec<'lib>(&'lib self) -> Result<BlackmagicRaw<'lib>, BrawError> {
-        let raw = braw_out_ptr!(|pp| self.factory.CreateCodec(pp));
+    pub fn create_codec(&self) -> Result<BlackmagicRaw, BrawError> {
+        let raw: ComPtr<IBlackmagicRaw> = braw_out_ptr!(|pp| self.factory.CreateCodec(pp));
 
-        let handler = CallbackHandle::new(DefaultCallback::default());
         let codec = BlackmagicRaw {
             raw,
-            lib: &self.lib,
-            callback: handler,
+            factory: self.clone(),
+            parent_guards: vec![].into(),
         };
-        let _ = codec.raw.SetCallback(codec.callback.as_mut_ptr())?;
+        let _ = codec.raw.SetCallback(self.default_callback.as_mut_ptr())?;
 
         Ok(codec)
     }
 
     /// Create a pipeline iterator
-    pub fn pipeline_iter<'lib>(&'lib self, interop: BlackmagicRawInterop) -> Result<PipelineIterator<'lib>, BrawError> {
+    pub fn pipeline_iter(&self, interop: BlackmagicRawInterop) -> Result<PipelineIterator, BrawError> {
         let mut out = std::ptr::null_mut();
         match self.factory.CreatePipelineIterator(interop, &mut out) {
-            Ok(_)  => Ok(PipelineIterator { raw: ComPtr::new(out)?, lib: &self.lib, is_first: true }),
+            Ok(_)  => Ok(PipelineIterator { raw: ComPtr::new(out)?, factory: self.clone(), is_first: true }),
             Err(e) => Err(e),
         }
     }
     /// Create a pipeline device iterator
-    pub fn pipeline_device_iter<'lib>(&'lib self, pipeline: BlackmagicRawPipeline, interop: BlackmagicRawInterop) -> Result<PipelineDeviceIterator<'lib>, BrawError> {
+    pub fn pipeline_device_iter(&self, pipeline: BlackmagicRawPipeline, interop: BlackmagicRawInterop) -> Result<PipelineDeviceIterator, BrawError> {
         let mut out = std::ptr::null_mut();
         match self.factory.CreatePipelineDeviceIterator(pipeline, interop, &mut out) {
-            Ok(_)  => Ok(PipelineDeviceIterator { raw: ComPtr::new(out)?, lib: &self.lib, is_first: true, current_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)) }),
+            Ok(_)  => Ok(PipelineDeviceIterator { raw: ComPtr::new(out)?, factory: self.clone(), is_first: true, current_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)) }),
             Err(e) => Err(e),
         }
     }
     /// Create empty clip geometry object
-    pub fn create_clip_geometry<'lib>(&'lib self) -> Result<BlackmagicRawClipGeometry<'lib>, BrawError> {
+    pub fn create_clip_geometry(&self) -> Result<BlackmagicRawClipGeometry, BrawError> {
         let geom = braw_out_ptr!(|pp| self.factory.CreateClipGeometry(pp));
-        Ok(BlackmagicRawClipGeometry { raw: geom, lib: &self.lib })
+        Ok(BlackmagicRawClipGeometry { raw: geom, factory: self.clone(), parent_guards: vec![].into() } )
     }
 }
 
-impl<'lib> BlackmagicRaw<'lib> {
-    pub fn open_clip<'codec>(&'codec self, path: &str) -> Result<BlackmagicRawClip<'codec>, BrawError> {
+impl BlackmagicRaw {
+    pub fn open_clip(&self, path: &str) -> Result<BlackmagicRawClip, BrawError> {
         let in_str = BrawString::from(path);
         let clip = braw_out_ptr!(|pp| self.raw.OpenClip(in_str.as_raw(), pp));
-        Ok(BlackmagicRawClip { raw: clip, lib: self.lib })
+        Ok(BlackmagicRawClip { raw: clip, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
     }
-    pub fn open_clip_with_geometry<'codec>(&'codec self, path: &str, geometry: BlackmagicRawClipGeometry) -> Result<BlackmagicRawClip<'codec>, BrawError> {
+    pub fn open_clip_with_geometry(&self, path: &str, geometry: BlackmagicRawClipGeometry) -> Result<BlackmagicRawClip, BrawError> {
         let in_str = BrawString::from(path);
         let clip = braw_out_ptr!(|pp| self.raw.OpenClipWithGeometry(in_str.as_raw(), geometry.as_raw(), pp));
-        Ok(BlackmagicRawClip { raw: clip, lib: self.lib })
+        Ok(BlackmagicRawClip { raw: clip, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
     }
 
+    // TODO: this is replacing the callback for all codec instances, which is not great and not what the user expects
     pub fn set_callback<T: BrawCallback>(&mut self, callback: T) -> Result<(), BrawError> {
-        let dcb = unsafe { &mut *(self.callback.as_mut_ptr() as *mut CallbackBox<DefaultCallback>) };
+        let dcb = unsafe { &mut *(self.factory.default_callback.as_mut_ptr() as *mut CallbackBox<DefaultCallback>) };
         dcb.state.user_callback = Some(Box::new(callback));
         Ok(())
     }
@@ -156,34 +167,36 @@ impl<'lib> BlackmagicRaw<'lib> {
     ///
     /// This function returns a future which needs to be awaited.
     /// `PreparePipeline` is started immediately when calling this function. You can either `await` the returned future, or use the callback mechanism to get notified when it's done.
-    pub fn prepare_pipeline_for_device(&self, device: BlackmagicRawPipelineDevice<'lib>) -> Result<CallbackFuture<()>, BrawError> {
+    pub fn prepare_pipeline_for_device(&self, device: BlackmagicRawPipelineDevice) -> Result<CallbackFuture<()>, BrawError> {
         let state = std::sync::Arc::new(State::<()>::new());
         let _ = self.raw.PreparePipelineForDevice(device.as_raw(), Arc::as_ptr(&state) as *mut c_void)?;
         Ok(CallbackFuture { state, job: None })
     }
 }
 
-impl<'lib> BlackmagicRawClip<'lib> {
+impl BlackmagicRawClip {
     /// Returns an iterator over the metadata entries in the clip
-    pub fn metadata_iter(&self) -> Result<MetadataIterator<'lib>, BrawError> {
+    pub fn metadata_iter(&self) -> Result<MetadataIterator, BrawError> {
         let mut out = std::ptr::null_mut();
         match self.raw.GetMetadataIterator(&mut out) {
-            Ok(_)  => Ok(MetadataIterator { raw: ComPtr::new(out)?, lib: self.lib, is_first: true }),
+            Ok(_)  => Ok(MetadataIterator { raw: ComPtr::new(out)?, factory: self.factory.clone(), is_first: true, parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) }),
             Err(e) => Err(e),
         }
     }
 
-    pub async fn read_frame(&self, frame_index: u64) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame(&self, frame_index: u64) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_with_hints(frame_index, &[]).await
     }
-    pub async fn read_frame_with_hints(&self, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_with_hints(&self, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobReadFrame(frame_index, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
-    pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes<'lib>>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes<'lib>>) -> Result<(), BrawError> {
+    pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobTrim(
             file_name.as_ptr() as *const _,
@@ -198,83 +211,95 @@ impl<'lib> BlackmagicRawClip<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipEx<'lib> {
-    pub async fn read_frame(&self, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+impl BlackmagicRawClipEx {
+    pub async fn read_frame(&self, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_with_hints(frame_index, bit_stream, &[]).await
     }
-    pub async fn read_frame_with_hints(&self, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_with_hints(&self, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobReadFrame(frame_index, bit_stream.as_ptr() as *const _ as *mut _, bit_stream.len() as u32, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
 }
 
-impl<'lib> BlackmagicRawFrame<'lib> {
-    pub fn metadata_iter(&self) -> Result<MetadataIterator<'lib>, BrawError> {
+impl BlackmagicRawFrame {
+    pub fn metadata_iter(&self) -> Result<MetadataIterator, BrawError> {
         let mut out = std::ptr::null_mut();
         match self.raw.GetMetadataIterator(&mut out) {
-            Ok(_)  => Ok(MetadataIterator { raw: ComPtr::new(out)?, lib: self.lib, is_first: true }),
+            Ok(_)  => Ok(MetadataIterator { raw: ComPtr::new(out)?, factory: self.factory.clone(), is_first: true, parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) }),
             Err(e) => Err(e),
         }
     }
-    pub async fn decode_and_process(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes<'lib>>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes<'lib>>) -> Result<BlackmagicRawProcessedImage<'lib>, BrawError> {
+    pub async fn decode_and_process(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<BlackmagicRawProcessedImage, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobDecodeAndProcessFrame(clip_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), frame_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let image: ComPtr<IBlackmagicRawProcessedImage> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await?;
-        Ok(BlackmagicRawProcessedImage { raw: image, lib: self.lib })
+        Ok(BlackmagicRawProcessedImage { raw: image, factory: self.factory.clone(), parent_guards })
     }
 }
 
-impl<'lib> BlackmagicRawClipMultiVideo<'lib> {
-    pub async fn read_frame(&self, track_index: u32, frame_index: u64) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+impl BlackmagicRawClipMultiVideo {
+    pub async fn read_frame(&self, track_index: u32, frame_index: u64) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_with_hints(track_index, frame_index, &[]).await
     }
-    pub async fn read_frame_with_hints(&self, track_index: u32, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_with_hints(&self, track_index: u32, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobReadFrame(track_index, frame_index, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
-    pub async fn read_frame_ex(&self, track_index: u32, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_ex(&self, track_index: u32, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_ex_with_hints(track_index, frame_index, bit_stream, &[]).await
     }
-    pub async fn read_frame_ex_with_hints(&self, track_index: u32, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_ex_with_hints(&self, track_index: u32, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobReadFrameEx(track_index, frame_index, bit_stream.as_ptr() as *const _ as *mut _, bit_stream.len() as u32, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
 }
 
-impl<'lib> BlackmagicRawClipImmersiveVideo<'lib> {
-    pub async fn read_frame(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+impl BlackmagicRawClipImmersiveVideo {
+    pub async fn read_frame(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_with_hints(video_track, frame_index, &[]).await
     }
-    pub async fn read_frame_with_hints(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_with_hints(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobImmersiveReadFrame(video_track, frame_index, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
-    pub async fn read_frame_ex(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_ex(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, bit_stream: &[u8]) -> Result<BlackmagicRawFrame, BrawError> {
         self.read_frame_ex_with_hints(video_track, frame_index, bit_stream, &[]).await
     }
-    pub async fn read_frame_ex_with_hints(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame<'lib>, BrawError> {
+    pub async fn read_frame_ex_with_hints(&self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64, bit_stream: &[u8], hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobImmersiveReadFrameEx(video_track, frame_index, bit_stream.as_ptr() as *const _ as *mut _, bit_stream.len() as u32, &mut job_ptr)?;
 
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, lib: self.lib })
+        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
 }
 
-impl<'lib> BlackmagicRawProcessedImage<'lib> {
+impl BlackmagicRawProcessedImage {
     pub fn resource(&self) -> Result<&[u8], BrawError> {
         unsafe {
             let mut ptr: *mut c_void = std::ptr::null_mut();
@@ -288,7 +313,7 @@ impl<'lib> BlackmagicRawProcessedImage<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawPost3DLUT<'lib> {
+impl BlackmagicRawPost3DLUT {
     pub fn resource_cpu(&self) -> Result<&[u8], BrawError> {
         unsafe {
             let mut ptr: *mut c_void = std::ptr::null_mut();
@@ -323,7 +348,7 @@ pub struct ToneCurve {
     pub video_black_level: u16
 }
 
-impl<'lib> BlackmagicRawToneCurve<'lib> {
+impl BlackmagicRawToneCurve {
     pub fn get_tone_curve(&self, camera_type: &str, gamma: &str, gen_: u16) -> Result<ToneCurve, BrawError> {
         let camera_type = BrawString::from(camera_type);
         let gamma = BrawString::from(gamma);
@@ -359,7 +384,7 @@ impl<'lib> BlackmagicRawToneCurve<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipAccelerometerMotion<'lib> {
+impl BlackmagicRawClipAccelerometerMotion {
     pub fn sample_range<T: std::ops::RangeBounds<u64>>(&self, range: T) -> Result<Vec<f32>, BrawError> {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
@@ -382,7 +407,7 @@ impl<'lib> BlackmagicRawClipAccelerometerMotion<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipGyroscopeMotion<'lib> {
+impl BlackmagicRawClipGyroscopeMotion {
     pub fn sample_range<T: std::ops::RangeBounds<u64>>(&self, range: T) -> Result<Vec<f32>, BrawError> {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
@@ -405,7 +430,7 @@ impl<'lib> BlackmagicRawClipGyroscopeMotion<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawPipelineDevice<'lib> {
+impl BlackmagicRawPipelineDevice {
     pub fn supported_resource_formats(&self) -> Result<Vec<BlackmagicRawResourceFormat>, BrawError> {
         let mut count = 0;
         self.raw.GetSupportedResourceFormats(std::ptr::null_mut(), &mut count)?;
@@ -419,13 +444,13 @@ impl<'lib> BlackmagicRawPipelineDevice<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipProcessingAttributes<'lib> {
+impl BlackmagicRawClipProcessingAttributes {
     pub fn clip_attribute_range(&self, attribute: BlackmagicRawClipProcessingAttribute) -> Result<(VariantValue, VariantValue, bool), BrawError> {
         let mut value_min = VARIANT::default();
         let mut value_max = VARIANT::default();
         let mut is_read_only = false;
         self.raw.GetClipAttributeRange(attribute, &mut value_min, &mut value_max, &mut is_read_only)?;
-        Ok((self.lib.variant_to_rust(value_min), self.lib.variant_to_rust(value_max), is_read_only))
+        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), is_read_only))
     }
     pub fn clip_attribute_list(&self, attribute: BlackmagicRawClipProcessingAttribute) -> Result<(Vec<VariantValue>, bool), BrawError> {
         let mut count = 0;
@@ -437,7 +462,7 @@ impl<'lib> BlackmagicRawClipProcessingAttributes<'lib> {
         let mut vec = vec![VARIANT::default(); count as usize];
         self.raw.GetClipAttributeList(attribute, vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
-        let vec = vec.into_iter().map(|v| self.lib.variant_to_rust(v)).collect();
+        let vec = vec.into_iter().map(|v| self.factory.lib.variant_to_rust(v)).collect();
         Ok((vec, is_read_only))
     }
     pub fn iso_list(&self) -> Result<(Vec<u32>, bool), BrawError> {
@@ -454,13 +479,13 @@ impl<'lib> BlackmagicRawClipProcessingAttributes<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawFrameProcessingAttributes<'lib> {
+impl BlackmagicRawFrameProcessingAttributes {
     pub fn frame_attribute_range(&self, attribute: BlackmagicRawFrameProcessingAttribute) -> Result<(VariantValue, VariantValue, bool), BrawError> {
         let mut value_min = VARIANT::default();
         let mut value_max = VARIANT::default();
         let mut is_read_only = false;
         self.raw.GetFrameAttributeRange(attribute, &mut value_min, &mut value_max, &mut is_read_only)?;
-        Ok((self.lib.variant_to_rust(value_min), self.lib.variant_to_rust(value_max), is_read_only))
+        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), is_read_only))
     }
     pub fn frame_attribute_list(&self, attribute: BlackmagicRawFrameProcessingAttribute) -> Result<(Vec<VariantValue>, bool), BrawError> {
         let mut count = 0;
@@ -472,7 +497,7 @@ impl<'lib> BlackmagicRawFrameProcessingAttributes<'lib> {
         let mut vec = vec![VARIANT::default(); count as usize];
         self.raw.GetFrameAttributeList(attribute, vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
-        let vec = vec.into_iter().map(|v| self.lib.variant_to_rust(v)).collect();
+        let vec = vec.into_iter().map(|v| self.factory.lib.variant_to_rust(v)).collect();
         Ok((vec, is_read_only))
     }
     pub fn iso_list(&self) -> Result<(Vec<u32>, bool), BrawError> {
@@ -489,7 +514,7 @@ impl<'lib> BlackmagicRawFrameProcessingAttributes<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipAudio<'lib> {
+impl BlackmagicRawClipAudio {
     pub fn audio_samples(&self, sample_frame_index: i64, max_sample_count: Option<u32>) -> Result<(Vec<u8>, u32), BrawError> {
         let max_sample_count = max_sample_count.unwrap_or(48000);
         let buffer_size_bytes = (max_sample_count * self.audio_channel_count()? * self.audio_bit_depth()?) / 8;
@@ -503,7 +528,7 @@ impl<'lib> BlackmagicRawClipAudio<'lib> {
     }
 }
 
-impl<'lib> BlackmagicRawClipPDAFData<'lib> {
+impl BlackmagicRawClipPDAFData {
     pub fn get_sample_images(&self, sample_index: u64) -> Result<(Vec<u8>, Vec<u8>), BrawError> {
         let sample_image_width = self.sample_image_width_in_pixels()?;
         let sample_image_height = self.sample_image_height_in_pixels()?;
