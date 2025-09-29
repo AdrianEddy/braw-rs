@@ -708,7 +708,7 @@ braw_interface! {
     impl {
         scalar CreateResource      => fn create_resource(&Self, context: *mut c_void, command_queue: *mut c_void, size_bytes: u32, typ: BlackmagicRawResourceType, usage: BlackmagicRawResourceUsage) -> *mut c_void; /// Create a new resource
         scalar GetResourceHostPointer => fn resource_host_pointer(&Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, resource_type: BlackmagicRawResourceType) -> *mut c_void; /// Get host pointer to resource
-        void   CopyResource        => fn copy_resource(&mut Self, context: *mut c_void, command_queue: *mut c_void, source: *mut c_void, source_type: BlackmagicRawResourceType, destination: *mut c_void, destination_type: BlackmagicRawResourceType, size_bytes: u32, copy_async: bool); /// Copy between resources
+        void   CopyResource        => fn copy_resource(&Self, context: *mut c_void, command_queue: *mut c_void, source: *mut c_void, source_type: BlackmagicRawResourceType, destination: *mut c_void, destination_type: BlackmagicRawResourceType, size_bytes: u32, copy_async: bool); /// Copy between resources
         void   ReleaseResource     => fn release_resource(&mut Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, typ: BlackmagicRawResourceType); /// Release a resource
     }
 }
@@ -944,11 +944,11 @@ braw_interface! {
     /// Interface for accessing a clip's audio data.
     #[derive(Clone)]
     impl {
-        scalar GetAudioFormat       => fn audio_format      (&Self) -> BlackmagicRawAudioFormat; /// Get audio format
-        scalar GetAudioBitDepth     => fn audio_bit_depth   (&Self) -> u32; /// Get bit depth
-        scalar GetAudioChannelCount => fn audio_channel_count(&Self) -> u32; /// Get channel count
-        scalar GetAudioSampleRate   => fn audio_sample_rate (&Self) -> u32; /// Get sample rate
-        scalar GetAudioSampleCount  => fn audio_sample_count(&Self) -> u64; /// Get total sample count
+        scalar GetAudioFormat       => fn format      (&Self) -> BlackmagicRawAudioFormat; /// Get audio format
+        scalar GetAudioBitDepth     => fn bit_depth   (&Self) -> u32; /// Get bit depth
+        scalar GetAudioChannelCount => fn channel_count(&Self) -> u32; /// Get channel count
+        scalar GetAudioSampleRate   => fn sample_rate (&Self) -> u32; /// Get sample rate
+        scalar GetAudioSampleCount  => fn sample_count(&Self) -> u64; /// Get total sample count
         // custom impl GetAudioSamples
     }
 }

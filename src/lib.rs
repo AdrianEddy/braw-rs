@@ -300,15 +300,36 @@ impl BlackmagicRawClipImmersiveVideo {
 }
 
 impl BlackmagicRawProcessedImage {
-    pub fn resource(&self) -> Result<&[u8], BrawError> {
-        unsafe {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let size = self.resource_size_bytes()? as usize;
-            let _ = self.raw.GetResource(&mut ptr)?;
-            if ptr.is_null() || size == 0 {
-                return Err(BrawError::NullValue);
-            }
-            Ok(std::slice::from_raw_parts(ptr as *const u8, size))
+    pub fn resource_cpu(&self) -> Result<&[u8], BrawError> {
+        match self.resource_type()? {
+            BlackmagicRawResourceType::BufferCPU => {
+                unsafe {
+                    let mut ptr: *mut c_void = std::ptr::null_mut();
+                    let size = self.resource_size_bytes()? as usize;
+                    let _ = self.raw.GetResource(&mut ptr)?;
+                    if ptr.is_null() || size == 0 {
+                        return Err(BrawError::NullValue);
+                    }
+                    Ok(std::slice::from_raw_parts(ptr as *const u8, size))
+                }
+            },
+            _ => Err(BrawError::NullValue),
+        }
+    }
+    pub fn resource_gpu(&self) -> Result<(BlackmagicRawResourceType, *const c_void), BrawError> {
+        let typ = self.resource_type()?;
+        match typ {
+            BlackmagicRawResourceType::BufferMetal |
+            BlackmagicRawResourceType::BufferCUDA |
+            BlackmagicRawResourceType::BufferOpenCL => {
+                let mut ptr: *mut c_void = std::ptr::null_mut();
+                let _ = self.raw.GetResource(&mut ptr)?;
+                if ptr.is_null() {
+                    return Err(BrawError::NullValue);
+                }
+                Ok((typ, ptr as *const c_void))
+            },
+            _ => Err(BrawError::NullValue),
         }
     }
 }
@@ -515,9 +536,9 @@ impl BlackmagicRawFrameProcessingAttributes {
 }
 
 impl BlackmagicRawClipAudio {
-    pub fn audio_samples(&self, sample_frame_index: i64, max_sample_count: Option<u32>) -> Result<(Vec<u8>, u32), BrawError> {
+    pub fn samples(&self, sample_frame_index: i64, max_sample_count: Option<u32>) -> Result<(Vec<u8>, u32), BrawError> {
         let max_sample_count = max_sample_count.unwrap_or(48000);
-        let buffer_size_bytes = (max_sample_count * self.audio_channel_count()? * self.audio_bit_depth()?) / 8;
+        let buffer_size_bytes = (max_sample_count * self.channel_count()? * self.bit_depth()?) / 8;
         let mut buffer: Vec<u8> = vec![0; buffer_size_bytes as usize];
         let mut samples_read: u32 = 0;
         let mut bytes_read: u32 = 0;
@@ -529,7 +550,7 @@ impl BlackmagicRawClipAudio {
 }
 
 impl BlackmagicRawClipPDAFData {
-    pub fn get_sample_images(&self, sample_index: u64) -> Result<(Vec<u8>, Vec<u8>), BrawError> {
+    pub fn sample_images(&self, sample_index: u64) -> Result<(Vec<u8>, Vec<u8>), BrawError> {
         let sample_image_width = self.sample_image_width_in_pixels()?;
         let sample_image_height = self.sample_image_height_in_pixels()?;
         let sample_image_bytes_per_pixel = self.sample_image_bytes_per_pixel()?;
