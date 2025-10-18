@@ -20,6 +20,26 @@ pub enum BrawError {
     Libloading(libloading::Error),
     Other(String),
 }
+impl Clone for BrawError {
+    fn clone(&self) -> Self {
+        match self {
+            BrawError::NullValue          => BrawError::NullValue,
+            BrawError::Unexpected         => BrawError::Unexpected,
+            BrawError::NotImplemented     => BrawError::NotImplemented,
+            BrawError::OutOfMemory        => BrawError::OutOfMemory,
+            BrawError::InvalidArgument    => BrawError::InvalidArgument,
+            BrawError::NoInterface        => BrawError::NoInterface,
+            BrawError::Pointer            => BrawError::Pointer,
+            BrawError::Handle             => BrawError::Handle,
+            BrawError::Abort              => BrawError::Abort,
+            BrawError::Fail               => BrawError::Fail,
+            BrawError::AccessDenied       => BrawError::AccessDenied,
+            BrawError::OtherHresult(hr)   => BrawError::OtherHresult(*hr),
+            BrawError::Libloading(e)      => BrawError::Other(e.to_string()), // Workaround for libloading::Error not being Clone, which is https://github.com/rust-lang/rust/issues/24135
+            BrawError::Other(s)           => BrawError::Other(s.clone()),
+        }
+    }
+}
 
 impl std::fmt::Display for BrawError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
