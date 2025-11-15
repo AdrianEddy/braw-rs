@@ -318,3 +318,49 @@ impl Drop for NativeVariant<'_> {
         }
     }
 }
+
+impl std::fmt::Display for VariantValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VariantValue::Empty => write!(f, ""),
+            VariantValue::U8(x)  => write!(f, "{x}"),
+            VariantValue::S16(x) => write!(f, "{x}"),
+            VariantValue::U16(x) => write!(f, "{x}"),
+            VariantValue::S32(x) => write!(f, "{x}"),
+            VariantValue::U32(x) => write!(f, "{x}"),
+            VariantValue::F32(x) => write!(f, "{x}"),
+            VariantValue::F64(x) => write!(f, "{x}"),
+            VariantValue::String(s) => write!(f, "{s}"),
+            VariantValue::ArrayU8(v)  => write!(f, "{v:?}"),
+            VariantValue::ArrayI16(v) => write!(f, "{v:?}"),
+            VariantValue::ArrayU16(v) => write!(f, "{v:?}"),
+            VariantValue::ArrayI32(v) => write!(f, "{v:?}"),
+            VariantValue::ArrayU32(v) => write!(f, "{v:?}"),
+            VariantValue::ArrayF32(v) => write!(f, "{v:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::ser::Serialize for VariantValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::ser::Serializer {
+        match self {
+            VariantValue::Empty => serializer.serialize_none(),
+            VariantValue::U8(x)  => serializer.serialize_u8(*x),
+            VariantValue::S16(x) => serializer.serialize_i16(*x),
+            VariantValue::U16(x) => serializer.serialize_u16(*x),
+            VariantValue::S32(x) => serializer.serialize_i32(*x),
+            VariantValue::U32(x) => serializer.serialize_u32(*x),
+            VariantValue::F32(x) => serializer.serialize_f32(*x),
+            VariantValue::F64(x) => serializer.serialize_f64(*x),
+            VariantValue::String(s) => serializer.serialize_str(s),
+            VariantValue::ArrayU8(v)  => v.serialize(serializer),
+            VariantValue::ArrayI16(v) => v.serialize(serializer),
+            VariantValue::ArrayU16(v) => v.serialize(serializer),
+            VariantValue::ArrayI32(v) => v.serialize(serializer),
+            VariantValue::ArrayU32(v) => v.serialize(serializer),
+            VariantValue::ArrayF32(v) => v.serialize(serializer),
+        }
+    }
+}

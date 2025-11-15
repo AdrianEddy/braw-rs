@@ -41,7 +41,7 @@ pub struct RawLibrary {
 
 impl RawLibrary {
     /// Load the BRAW shared library
-    pub fn load<P: AsRef<std::ffi::OsStr>>(path: P) -> Result<Self, libloading::Error> {
+    pub fn load<P: libloading::AsFilename>(path: P) -> Result<Self, libloading::Error> {
         unsafe {
             let lib = dl::Library::new(path)?;
             Ok(Self {
