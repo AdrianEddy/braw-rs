@@ -16,6 +16,7 @@ pub enum BrawError {
     Abort,
     Fail,
     AccessDenied,
+    DeviceLost,
     OtherHresult(HRESULT),
     Libloading(libloading::Error),
     Other(String),
@@ -34,6 +35,7 @@ impl Clone for BrawError {
             BrawError::Abort              => BrawError::Abort,
             BrawError::Fail               => BrawError::Fail,
             BrawError::AccessDenied       => BrawError::AccessDenied,
+            BrawError::DeviceLost         => BrawError::DeviceLost,
             BrawError::OtherHresult(hr)   => BrawError::OtherHresult(*hr),
             BrawError::Libloading(e)      => BrawError::Other(e.to_string()), // Workaround for libloading::Error not being Clone, which is https://github.com/rust-lang/rust/issues/24135
             BrawError::Other(s)           => BrawError::Other(s.clone()),
@@ -55,6 +57,7 @@ impl std::fmt::Display for BrawError {
             BrawError::Abort              => write!(f, "BRAW error: Abort"),
             BrawError::Fail               => write!(f, "BRAW error: Fail"),
             BrawError::AccessDenied       => write!(f, "BRAW error: Access denied"),
+            BrawError::DeviceLost         => write!(f, "BRAW error: GPU device lost"),
             BrawError::OtherHresult(hr)   => write!(f, "BRAW error: HRESULT 0x{hr:X}"),
             BrawError::Libloading(e)      => write!(f, "BRAW error: Libloading error: {e}"),
             BrawError::Other(s)           => write!(f, "BRAW error: {s}"),
@@ -76,6 +79,14 @@ impl From<HRESULT> for BrawError {
             0x80000007 => BrawError::Abort,
             0x80000008 => BrawError::Fail,
             0x80000009 => BrawError::AccessDenied,
+            0x000002C8
+            | 0x000002BE
+            | 0xFFFFFFDE
+            | 0xFFFFFFDC
+            | 0xFFFFFFDF
+            | 0x887A0005
+            | 0x887A0006
+            | 0x887A0007 => BrawError::DeviceLost,
             _ => BrawError::OtherHresult(hr),
         }
     }

@@ -308,6 +308,7 @@ impl Drop for ComPtrRefGuard {
         }
     }
 }
+unsafe impl Send for ComPtrRefGuard {}
 
 #[derive(Clone)]
 pub struct DropOrderVec<T: Clone>(pub Vec<T>);

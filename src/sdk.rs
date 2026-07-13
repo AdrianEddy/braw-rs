@@ -415,6 +415,34 @@ pub enum BlackmagicRawImmersiveVideoTrack {
 
 // Interfaces
 
+// ─────────────────────────────────────────────────────────────────────────
+// Thread-safety (Send / Sync) — safety rationale for the `unsafe impl`s below
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Each `braw_interface!` type wraps a raw COM pointer (`ComPtr<I…>`, a
+// `NonNull`) plus COM keep-alive guards, so it is neither `Send` nor `Sync` by
+// default. The manual `unsafe impl`s that follow rest entirely on Blackmagic
+// RAW's documented **free-threaded decode model**: the codec, its clips, frames
+// and jobs may be driven from any thread, and the underlying COM objects
+// synchronise `AddRef`/`Release` (and job `Abort`/completion delivery)
+// internally. Two tiers are asserted, matching the per-interface audit proven
+// by `tests/send_sync_surface.rs`:
+//
+//   * Tier 1 — `Send` only. Stateful / cursor-bearing handles (the codec,
+//     clips, frames, jobs, configuration, iterators, …). Moving ownership to
+//     another thread is sound, but they expose `&mut self` mutators and/or
+//     internal cursor state, so `&T` is NOT safely shareable → deliberately not
+//     `Sync`.
+//
+//   * Tier 2 — `Send + Sync`. Read-only accessor interfaces whose public
+//     surface is immutable getters over already-decoded / immutable data
+//     (`ProcessedImage`, `ToneCurve`, `PipelineDevice`, the sensor-data and
+//     resolution/audio views, `Post3DLUT`). Concurrent `&self` getters are just
+//     concurrent reads, so sharing `&T` across threads is sound.
+//
+// The per-site `// SAFETY:` comments below tag which tier (and hence which of
+// these arguments) justifies that specific impl.
+
 braw_interface! {
     BlackmagicRaw {
         /// Opens a clip from the specified file path
@@ -443,6 +471,8 @@ braw_interface! {
         interface fn manual_decoder_flow2(&self) -> BlackmagicRawManualDecoderFlow2; /// Get the manual decoder flow 2 (hybrid CPU/GPU) interface
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRaw {}
 
 braw_interface! {
     /// Use this to create one or more Codec objects.
@@ -482,6 +512,8 @@ braw_interface! {
         void Next          => fn next(&mut Self); /// Step to next pipeline entry
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawPipelineIterator {}
 
 braw_interface! {
     BlackmagicRawPipelineDeviceIterator {
@@ -505,6 +537,8 @@ braw_interface! {
         void Next           => fn next(&mut Self); /// Step to next device entry
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawPipelineDeviceIterator {}
 
 braw_interface! {
     BlackmagicRawOpenGLInteropHelper {
@@ -522,6 +556,8 @@ braw_interface! {
         scalar2 SetImage                  => fn set_image(&mut Self, processed_image: BlackmagicRawProcessedImage) -> (u32, i32); /// Copies the processed image into an OpenGL texture, returns (texture name, texture target)
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawOpenGLInteropHelper {}
 
 braw_interface! {
     BlackmagicRawPipelineDevice {
@@ -568,6 +604,10 @@ braw_interface! {
         // custom impl GetSupportedResourceFormats
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawPipelineDevice {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawPipelineDevice {}
 
 braw_interface! {
     BlackmagicRawToneCurve {
@@ -585,6 +625,10 @@ braw_interface! {
         // custom impl EvaluateToneCurve
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawToneCurve {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawToneCurve {}
 
 braw_interface! {
     BlackmagicRawConfiguration {
@@ -630,6 +674,8 @@ braw_interface! {
         void   SetFromDevice           => fn set_from_device(&mut Self, pipeline_device: BlackmagicRawPipelineDevice); /// Configure from a device object
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawConfiguration {}
 
 braw_interface! {
     BlackmagicRawConfigurationEx {
@@ -659,6 +705,8 @@ braw_interface! {
         void   SetSizeLimit       => fn set_size_limit(&mut Self, size_limit: BlackmagicRawSizeLimit, size_limit_width: u32, size_limit_height: u32); /// Set resolution size limits
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawConfigurationEx {}
 
 braw_interface! {
     BlackmagicRawClipGeometry {
@@ -688,6 +736,8 @@ braw_interface! {
         void   SetFlip            => fn set_flip(&mut Self, flip: BlackmagicRawFlip); /// Set the flip state
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipGeometry {}
 
 braw_interface! {
     BlackmagicRawResourceManager {
@@ -712,6 +762,8 @@ braw_interface! {
         void   ReleaseResource     => fn release_resource(&mut Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, typ: BlackmagicRawResourceType); /// Release a resource
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawResourceManager {}
 
 braw_interface! {
     BlackmagicRawMetadataIterator {
@@ -732,6 +784,8 @@ braw_interface! {
         void  Next     => fn next(&mut Self); /// Move to next metadata entry
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawMetadataIterator {}
 
 braw_interface! {
     BlackmagicRawClipProcessingAttributes {
@@ -761,6 +815,8 @@ braw_interface! {
         // custom impl GetISOList
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipProcessingAttributes {}
 
 braw_interface! {
     BlackmagicRawFrameProcessingAttributes {
@@ -787,6 +843,8 @@ braw_interface! {
         // custom impl GetISOList
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawFrameProcessingAttributes {}
 
 braw_interface! {
     BlackmagicRawPost3DLUT {
@@ -820,6 +878,10 @@ braw_interface! {
         // custom impl GetResourceCPU
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawPost3DLUT {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawPost3DLUT {}
 
 braw_interface! {
     BlackmagicRawProcessedImage {
@@ -852,6 +914,10 @@ braw_interface! {
         scalar2 GetResourceContextAndCommandQueue => fn resource_context_and_command_queue(&Self) -> (*mut c_void, *mut c_void); /// Get context and command queue
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawProcessedImage {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawProcessedImage {}
 
 braw_interface! {
     BlackmagicRawJob {
@@ -878,6 +944,8 @@ braw_interface! {
         interface fn read_job_hints(&self) -> BlackmagicRawReadJobHints; /// Get read job hints interface
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawJob {}
 
 pub enum ReadJobHints {
     None,
@@ -898,6 +966,8 @@ braw_interface! {
         void SetReaderResolutionScale => fn set_reader_resolution_scale(&mut Self, reader_resolution_scale: BlackmagicRawResolutionScale); /// Set the scale for reading
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawReadJobHints {}
 
 braw_interface! {
     /// Callback for IBlackmagicRaw.
@@ -952,6 +1022,10 @@ braw_interface! {
         // custom impl GetAudioSamples
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipAudio {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawClipAudio {}
 
 braw_interface! {
     BlackmagicRawClipAccelerometerMotion {
@@ -975,6 +1049,10 @@ braw_interface! {
         // custom impl GetSampleRange
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipAccelerometerMotion {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawClipAccelerometerMotion {}
 
 braw_interface! {
     BlackmagicRawClipGyroscopeMotion {
@@ -998,6 +1076,10 @@ braw_interface! {
         // custom impl GetSampleRange
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipGyroscopeMotion {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawClipGyroscopeMotion {}
 
 braw_interface! {
     BlackmagicRawClipPDAFData {
@@ -1027,6 +1109,10 @@ braw_interface! {
         // custom impl GetSampleImages
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipPDAFData {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawClipPDAFData {}
 
 braw_interface! {
     BlackmagicRawFrame {
@@ -1076,6 +1162,8 @@ braw_interface! {
         interface fn processing_attributes(&self) -> BlackmagicRawFrameProcessingAttributes; /// Get frame processing attributes interface
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawFrame {}
 
 braw_interface! {
     BlackmagicRawFrameEx {
@@ -1093,6 +1181,8 @@ braw_interface! {
         scalar2 GetProcessedImageResolution => fn processed_image_resolution(&Self) -> (u32, u32); /// Get processed image resolution (width, height)
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawFrameEx {}
 
 braw_interface! {
     BlackmagicRawFrameMultiVideo {
@@ -1107,6 +1197,8 @@ braw_interface! {
         scalar GetVideoTrackIndex => fn video_track_index(&Self) -> u32; /// Get video track index
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawFrameMultiVideo {}
 
 braw_interface! {
     BlackmagicRawManualDecoderFlow1 {
@@ -1140,6 +1232,8 @@ braw_interface! {
         // TODO custom impl PopulateFrameStateBuffer
    }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawManualDecoderFlow1 {}
 
 braw_interface! {
     BlackmagicRawManualDecoderFlow2 {
@@ -1176,6 +1270,8 @@ braw_interface! {
         // TODO custom impl PopulateFrameStateBuffer
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawManualDecoderFlow2 {}
 
 braw_interface! {
     BlackmagicRawClip {
@@ -1249,6 +1345,8 @@ braw_interface! {
         interface fn pdaf_data(&self) -> BlackmagicRawClipPDAFData; /// Get PDAF data
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClip {}
 
 braw_interface! {
     BlackmagicRawClipEx {
@@ -1272,6 +1370,8 @@ braw_interface! {
         // custom impl CreateJobReadFrame
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipEx {}
 
 braw_interface! {
     BlackmagicRawClipMultiVideo {
@@ -1301,6 +1401,8 @@ braw_interface! {
         scalar GetBitStreamSizeBytes => fn bit_stream_size_bytes(&Self, video_track_index: u32, frame_index: u64) -> u32; /// Get bitstream size
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipMultiVideo {}
 
 braw_interface! {
     BlackmagicRawClipImmersiveVideo {
@@ -1333,6 +1435,8 @@ braw_interface! {
         scalar GetImmersiveBitStreamSizeBytes => fn immersive_bit_stream_size_bytes(&Self, video_track: BlackmagicRawImmersiveVideoTrack, frame_index: u64) -> u32; /// Get bitstream size
     }
 }
+// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipImmersiveVideo {}
 
 braw_interface! {
     BlackmagicRawClipResolutions {
@@ -1359,3 +1463,7 @@ braw_interface! {
         scalar2 GetClosestResolutionForScale => fn closest_resolution_for_scale(&Self, resolution_scale: BlackmagicRawResolutionScale) -> (u32, u32); /// Get closest resolution for scale
     }
 }
+// SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawClipResolutions {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawClipResolutions {}

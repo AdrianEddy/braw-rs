@@ -16,13 +16,20 @@ paste = "1.0"
 libloading = "0.9"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"], optional = true }
+# Virtual-filesystem integration (decode clips from memory / custom sources).
+# Optional so `braw` has no hard dependency on the hooking engine.
+hookfs = { path = "../plthook/crates/hookfs", optional = true }
 
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
+# Enables `Factory::enable_virtual_files` and `BlackmagicRaw::open_clip_from`,
+# decoding `.braw` clips from arbitrary `Read + Seek` streams (Windows in Phase 2).
+hookfs = ["dep:hookfs"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation","Win32_System_Com","Win32_System_Variant", "Win32_System_Ole"] }
 
 [dev-dependencies]
-pollster = "0.4"
+pollster          = "0.4"
+static_assertions = "1.1"

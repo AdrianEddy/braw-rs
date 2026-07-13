@@ -11,6 +11,7 @@ pub struct MetadataIterator {
     pub(crate) parent_guards: DropOrderVec<ComPtrRefGuard>,
     pub(crate) factory: Factory,
 }
+unsafe impl Send for MetadataIterator {}
 impl Iterator for MetadataIterator {
     type Item = (String, VariantValue);
     fn next(&mut self) -> Option<Self::Item> {
@@ -63,6 +64,7 @@ pub struct PipelineIterator {
     pub(crate) is_first: bool,
     pub(crate) factory: Factory,
 }
+unsafe impl Send for PipelineIterator {}
 impl Iterator for PipelineIterator {
     type Item = PipelineIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {
@@ -122,6 +124,7 @@ pub struct PipelineDeviceIterator {
     pub(crate) factory: Factory,
     pub(crate) current_index: Arc<AtomicUsize>,
 }
+unsafe impl Send for PipelineDeviceIterator {}
 impl Iterator for PipelineDeviceIterator {
     type Item = PipelineDeviceIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {

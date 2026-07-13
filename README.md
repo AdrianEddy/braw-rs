@@ -49,7 +49,7 @@ pollster = "0.3" # optional, for simple blocking
 
 A concise walkthrough: load the SDK, open a clip, inspect metadata, read & process a frame.
 
-```rust
+```rust,no_run
 use braw::*;
 
 fn main() -> Result<(), BrawError> {
@@ -64,7 +64,7 @@ fn main() -> Result<(), BrawError> {
         let cfgx = codec.configuration_ex()?;
         println!("Camera support version: {}", cfg.camera_support_version()?);
         println!("CPU Threads: {}", cfg.cpu_threads()?);
-        println!("Instruction set: ", cfgx.instruction_set()?);
+        println!("Instruction set: {:?}", cfgx.instruction_set()?);
 
         // Open a .braw clip
         let clip = codec.open_clip("sample.braw")?;

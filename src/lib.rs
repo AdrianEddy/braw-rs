@@ -18,6 +18,9 @@ mod sdk;       pub use sdk::*;
 mod string;    pub use string::*;
 mod variant;   pub use variant::*;
 
+#[cfg(feature = "hookfs")]
+mod virtualfs; #[cfg(feature = "hookfs")] pub use virtualfs::*;
+
 #[cfg(target_os = "windows")]
 use libloading::os::windows as dl;
 #[cfg(not(target_os = "windows"))]
@@ -64,6 +67,20 @@ impl RawLibrary {
         unsafe {
             let create: dl::Symbol<BlackmagicCreateFn> = self.lib.get(b"CreateBlackmagicRawFactoryInstance\0")?;
             ComPtr::new(create())
+        }
+    }
+
+    /// The process address of the `CreateBlackmagicRawFactoryInstance` export.
+    ///
+    /// `hookfs` discovers the SDK module by **an address inside it** (not a
+    /// basename), so this is the anchor used to scope the import hooks to exactly
+    /// the Blackmagic RAW image (impl-hookfs.md §5.4/§10).
+    #[cfg(feature = "hookfs")]
+    pub fn factory_instance_address(&self) -> Result<*const c_void, BrawError> {
+        unsafe {
+            let create: dl::Symbol<BlackmagicCreateFn> =
+                self.lib.get(b"CreateBlackmagicRawFactoryInstance\0")?;
+            Ok(*create as usize as *const c_void)
         }
     }
 }
@@ -131,6 +148,8 @@ impl Factory {
         Ok(BlackmagicRawClipGeometry { raw: geom, factory: self.clone(), parent_guards: vec![].into() } )
     }
 }
+unsafe impl Send for Factory {}
+unsafe impl Sync for Factory {}
 
 impl BlackmagicRaw {
     pub fn open_clip(&self, path: &str) -> Result<BlackmagicRawClip, BrawError> {
@@ -158,7 +177,14 @@ impl BlackmagicRaw {
     pub fn prepare_pipeline(&self, pipeline: u32, pipeline_context: *mut c_void, pipeline_command_queue: *mut c_void) -> Result<CallbackFuture<()>, BrawError> {
         let state = std::sync::Arc::new(State::<()>::new());
 
-        let _ = self.raw.PreparePipeline(pipeline, pipeline_context, pipeline_command_queue, Arc::as_ptr(&state) as *mut c_void)?;
+        // Owned refcount handed to the SDK; reclaimed in
+        // `prepare_pipeline_complete` via `Arc::from_raw`. Reclaim here too if
+        // the call fails (no callback will fire) so `State` isn't leaked.
+        let raw = Arc::into_raw(state.clone()) as *mut c_void;
+        if let Err(e) = self.raw.PreparePipeline(pipeline, pipeline_context, pipeline_command_queue, raw) {
+            unsafe { drop(Arc::from_raw(raw as *const State<()>)); }
+            return Err(e);
+        }
 
         Ok(CallbackFuture { state, job: None })
     }
@@ -169,7 +195,11 @@ impl BlackmagicRaw {
     /// `PreparePipeline` is started immediately when calling this function. You can either `await` the returned future, or use the callback mechanism to get notified when it's done.
     pub fn prepare_pipeline_for_device(&self, device: BlackmagicRawPipelineDevice) -> Result<CallbackFuture<()>, BrawError> {
         let state = std::sync::Arc::new(State::<()>::new());
-        let _ = self.raw.PreparePipelineForDevice(device.as_raw(), Arc::as_ptr(&state) as *mut c_void)?;
+        let raw = Arc::into_raw(state.clone()) as *mut c_void;
+        if let Err(e) = self.raw.PreparePipelineForDevice(device.as_raw(), raw) {
+            unsafe { drop(Arc::from_raw(raw as *const State<()>)); }
+            return Err(e);
+        }
         Ok(CallbackFuture { state, job: None })
     }
 }
@@ -188,13 +218,22 @@ impl BlackmagicRawClip {
         self.read_frame_with_hints(frame_index, &[]).await
     }
     pub async fn read_frame_with_hints(&self, frame_index: u64, hints: &[ReadJobHints]) -> Result<BlackmagicRawFrame, BrawError> {
+        self.create_read_frame_future(frame_index, hints)?.await
+    }
+
+    /// Submit a read-frame job and return a `'static` [`ReadFrameFuture`]
+    /// for its completion — the pipeline-friendly form of [`read_frame`].
+    /// The job is submitted immediately; await (or poll) the future for
+    /// the `BlackmagicRawFrame`. Unlike `read_frame` the future borrows
+    /// nothing from `self`, so a scheduler can keep many in flight.
+    pub fn create_read_frame_future(&self, frame_index: u64, hints: &[ReadJobHints]) -> Result<ReadFrameFuture, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobReadFrame(frame_index, &mut job_ptr)?;
 
         let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
 
-        let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
-        Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
+        let inner = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?;
+        Ok(ReadFrameFuture::new(inner, self.factory.clone(), parent_guards))
     }
     pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
         let mut job_ptr = std::ptr::null_mut();
@@ -235,13 +274,21 @@ impl BlackmagicRawFrame {
         }
     }
     pub async fn decode_and_process(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<BlackmagicRawProcessedImage, BrawError> {
+        self.create_decode_process_future(clip_processing_attributes, frame_processing_attributes)?.await
+    }
+
+    /// Submit a decode-and-process job and return a `'static`
+    /// [`DecodeProcessFuture`] for its completion — the pipeline-friendly
+    /// form of [`decode_and_process`]. The job is submitted immediately;
+    /// await (or poll) the future for the `BlackmagicRawProcessedImage`.
+    pub fn create_decode_process_future(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<DecodeProcessFuture, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         self.raw.CreateJobDecodeAndProcessFrame(clip_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), frame_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), &mut job_ptr)?;
 
         let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
 
-        let image: ComPtr<IBlackmagicRawProcessedImage> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await?;
-        Ok(BlackmagicRawProcessedImage { raw: image, factory: self.factory.clone(), parent_guards })
+        let inner = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?;
+        Ok(DecodeProcessFuture::new(inner, self.factory.clone(), parent_guards))
     }
 }
 
@@ -535,10 +582,38 @@ impl BlackmagicRawFrameProcessingAttributes {
     }
 }
 
+/// The number of bytes `GetAudioSamples` may write for `max_sample_count`
+/// interleaved sample-frames.
+///
+/// The BMD SDK contract (`IBlackmagicRawClipAudio::GetAudioSamples`) delivers
+/// interleaved little-endian PCM: for each of the up-to-`max_sample_count`
+/// sample-frames it writes one sample per channel, each `bit_depth` bits wide.
+/// `GetAudioBitDepth` reports bits (always a multiple of 8 — 16/24/32) and
+/// `GetAudioChannelCount` reports the channel count, so the upper bound is
+/// `max_sample_count * channel_count * bit_depth / 8` bytes.
+///
+/// The product is computed in `u64` so it can never wrap (all three factors are
+/// `u32`, so their product needs up to 96 bits — well beyond `u32`). A wrapping
+/// `u32` product would defeat the buffer-size guard: it could collapse a large
+/// `max_sample_count` to a tiny (or zero) required size, letting an
+/// undersized/empty buffer pass the check while `GetAudioSamples` is still handed
+/// the large `max_sample_count` — a heap overrun. On overflow (only reachable
+/// with absurd factors) [`BrawError::InvalidArgument`] is returned.
+fn required_sample_bytes(max_sample_count: u32, channel_count: u32, bit_depth: u32) -> Result<u64, BrawError> {
+    u64::from(max_sample_count)
+        .checked_mul(u64::from(channel_count))
+        .and_then(|v| v.checked_mul(u64::from(bit_depth)))
+        .map(|bits| bits / 8)
+        .ok_or(BrawError::InvalidArgument)
+}
+
 impl BlackmagicRawClipAudio {
     pub fn samples(&self, sample_frame_index: i64, max_sample_count: Option<u32>) -> Result<(Vec<u8>, u32), BrawError> {
         let max_sample_count = max_sample_count.unwrap_or(48000);
-        let buffer_size_bytes = (max_sample_count * self.channel_count()? * self.bit_depth()?) / 8;
+        let required_bytes = required_sample_bytes(max_sample_count, self.channel_count()?, self.bit_depth()?)?;
+        // `GetAudioSamples`' `bufferSizeBytes` parameter is a `u32`; a buffer it
+        // cannot even describe is unusable, so reject rather than truncate.
+        let buffer_size_bytes = u32::try_from(required_bytes).map_err(|_| BrawError::InvalidArgument)?;
         let mut buffer: Vec<u8> = vec![0; buffer_size_bytes as usize];
         let mut samples_read: u32 = 0;
         let mut bytes_read: u32 = 0;
@@ -546,6 +621,29 @@ impl BlackmagicRawClipAudio {
 
         buffer.truncate(bytes_read as usize);
         Ok((buffer, samples_read))
+    }
+
+    /// Read interleaved little-endian PCM audio samples directly into a caller-provided buffer,
+    /// without allocating.
+    ///
+    /// `dst` MUST be at least `max_sample_count * channel_count() * bit_depth() / 8` bytes long
+    /// (the number of bytes the SDK may write for `max_sample_count` samples). If it is too small,
+    /// [`BrawError::InvalidArgument`] is returned and no read is performed, rather than letting the
+    /// SDK overrun the buffer.
+    ///
+    /// Returns the number of samples (per channel) actually read into `dst`.
+    pub fn samples_into(&self, sample_frame_index: i64, max_sample_count: u32, dst: &mut [u8]) -> Result<u32, BrawError> {
+        let required_bytes = required_sample_bytes(max_sample_count, self.channel_count()?, self.bit_depth()?)?;
+        if (dst.len() as u64) < required_bytes {
+            return Err(BrawError::InvalidArgument);
+        }
+        // Report the real capacity to the SDK, clamped to the `u32` parameter
+        // width (a buffer larger than `u32::MAX` is served in full up to that cap).
+        let buffer_size_bytes = u32::try_from(dst.len()).unwrap_or(u32::MAX);
+        let mut samples_read: u32 = 0;
+        let mut bytes_read: u32 = 0;
+        self.raw.GetAudioSamples(sample_frame_index, dst.as_mut_ptr() as *mut c_void, buffer_size_bytes, max_sample_count, &mut samples_read, &mut bytes_read)?;
+        Ok(samples_read)
     }
 }
 
@@ -562,5 +660,48 @@ impl BlackmagicRawClipPDAFData {
         let mut right_buffer = vec![0u8; sample_image_data_size as usize];
         self.raw.GetSampleImages(sample_index, left_buffer.as_mut_ptr(), right_buffer.as_mut_ptr(), sample_image_data_size)?;
         Ok((left_buffer, right_buffer))
+    }
+}
+
+#[cfg(test)]
+mod audio_buffer_tests {
+    use super::{required_sample_bytes, BrawError};
+
+    #[test]
+    fn required_bytes_matches_interleaved_pcm_formula() {
+        // 48000 sample-frames, 2 channels, 24-bit → 48000 * 2 * 3 bytes.
+        assert_eq!(required_sample_bytes(48_000, 2, 24).unwrap(), 48_000 * 2 * 3);
+        // 16-bit stereo.
+        assert_eq!(required_sample_bytes(1_024, 2, 16).unwrap(), 1_024 * 2 * 2);
+    }
+
+    #[test]
+    fn huge_sample_count_is_not_wrapped_and_would_reject_a_small_buffer() {
+        // Picked so the *naive all-u32* product `n * channels * bit_depth` is
+        // exactly 2^32 and wraps to 0, which is the bug this guards against.
+        let n: u32 = 0x0400_0000; // 2^26
+        let channels: u32 = 2;
+        let bit_depth: u32 = 32; // n * 2 * 32 == 2^32 == 0 (mod 2^32)
+        let wrapped = n.wrapping_mul(channels).wrapping_mul(bit_depth) / 8;
+        assert_eq!(wrapped, 0, "precondition: the naive u32 product wraps to 0");
+
+        // The overflow-safe computation yields the true 512 MiB requirement.
+        let required = required_sample_bytes(n, channels, bit_depth).unwrap();
+        assert_eq!(required, 512 * 1024 * 1024);
+
+        // Therefore a small buffer is rejected instead of wrapped-and-accepted.
+        // (This mirrors `samples_into`'s `(dst.len() as u64) < required` guard.)
+        for small_len in [0usize, 16, 4096] {
+            assert!((small_len as u64) < required, "a {small_len}-byte buffer must be rejected");
+        }
+    }
+
+    #[test]
+    fn product_overflow_returns_invalid_argument() {
+        // Even the u64 product cannot represent these absurd factors: reject.
+        assert!(matches!(
+            required_sample_bytes(u32::MAX, u32::MAX, u32::MAX),
+            Err(BrawError::InvalidArgument)
+        ));
     }
 }

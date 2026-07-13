@@ -3,6 +3,7 @@
 
 use super::*;
 use std::sync::atomic::{ AtomicU32, Ordering };
+use std::panic::{ catch_unwind, AssertUnwindSafe };
 use core::ffi::c_void;
 
 #[allow(unused_variables)]
@@ -41,32 +42,52 @@ unsafe fn cb_from_this<T: BrawCallback>(this: *mut c_void) -> *mut CallbackBox<T
     this as *mut CallbackBox<T>
 }
 
-// IUnknown — signatures must match platform
-unsafe extern "system" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
-    const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
-    unsafe {
-        if ppv.is_null() { return E_POINTER; }
-        *ppv = std::ptr::null_mut();
-
-        // Accept IUnknown and IID_IBlackmagicRawCallback
-        let want_iid = guid_from_riid(riid);
-        dbg!(&want_iid);
-        if want_iid == IID_IUNKNOWN || want_iid == IID_IBlackmagicRawCallback {
-            *ppv = this;
-            cb_addref::<T>(this);
-            return S_OK;
+/// Panic firewall for the `extern "system"` COM callbacks. A Rust panic must
+/// never unwind across the C++ ABI boundary that invoked us (plan R15): catch
+/// it, log it, and return an ABI-valid `fallback` sentinel instead of unwinding.
+#[inline]
+fn ffi_guard<R>(what: &str, fallback: R, f: impl FnOnce() -> R) -> R {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => {
+            log::error!("panic in BRAW callback `{what}` swallowed at the FFI boundary (R15)");
+            fallback
         }
     }
-    0x80004002u32 as i32 // E_NOINTERFACE
+}
+
+// IUnknown — signatures must match platform
+unsafe extern "system" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
+    // E_UNEXPECTED (0x8000FFFF) is the ABI-valid failure sentinel if the body panics.
+    ffi_guard("QueryInterface", 0x8000FFFFu32 as i32, move || {
+        const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
+        unsafe {
+            if ppv.is_null() { return E_POINTER; }
+            *ppv = std::ptr::null_mut();
+
+            // Accept IUnknown and IID_IBlackmagicRawCallback
+            let want_iid = guid_from_riid(riid);
+            if want_iid == IID_IUNKNOWN || want_iid == IID_IBlackmagicRawCallback {
+                *ppv = this;
+                cb_addref::<T>(this);
+                return S_OK;
+            }
+        }
+        0x80004002u32 as i32 // E_NOINTERFACE
+    })
 }
 
 unsafe extern "system" fn cb_addref<T: BrawCallback>(this: *mut c_void) -> u32 {
-    let me = unsafe { &*cb_from_this::<T>(this) };
-    me.refcnt.fetch_add(1, Ordering::Relaxed) + 1
+    ffi_guard("AddRef", 0, move || {
+        let me = unsafe { &*cb_from_this::<T>(this) };
+        me.refcnt.fetch_add(1, Ordering::Relaxed) + 1
+    })
 }
 
 unsafe extern "system" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 {
-    unsafe {
+    // Dropping the box runs the user callback state's `Drop`, which may panic —
+    // the firewall keeps that from unwinding across the FFI boundary.
+    ffi_guard("Release", 0, move || unsafe {
         let me = &*cb_from_this::<T>(this);
         let prev = me.refcnt.fetch_sub(1, Ordering::Release);
         if prev == 1 {
@@ -76,32 +97,32 @@ unsafe extern "system" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 
         } else {
             prev - 1
         }
-    }
+    })
 }
 
 unsafe extern "system" fn cb_read_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
-    unsafe { (*cb_from_this::<T>(this)).state.read_complete(job, result, frame); }
+    ffi_guard("ReadComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.read_complete(job, result, frame); });
 }
 unsafe extern "system" fn cb_decode_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
-    unsafe { (*cb_from_this::<T>(this)).state.decode_complete(job, result); }
+    ffi_guard("DecodeComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.decode_complete(job, result); });
 }
 unsafe extern "system" fn cb_process_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
-    unsafe { (*cb_from_this::<T>(this)).state.process_complete(job, result, processed_image); }
+    ffi_guard("ProcessComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.process_complete(job, result, processed_image); });
 }
 unsafe extern "system" fn cb_trim_progress<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, progress: f32) {
-    unsafe { (*cb_from_this::<T>(this)).state.trim_progress(job, progress); }
+    ffi_guard("TrimProgress", (), move || unsafe { (*cb_from_this::<T>(this)).state.trim_progress(job, progress); });
 }
 unsafe extern "system" fn cb_trim_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
-    unsafe { (*cb_from_this::<T>(this)).state.trim_complete(job, result); }
+    ffi_guard("TrimComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.trim_complete(job, result); });
 }
 unsafe extern "system" fn cb_sidecar_metadata_parse_warning<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
-    unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_warning(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); }
+    ffi_guard("SidecarMetadataParseWarning", (), move || unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_warning(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); });
 }
 unsafe extern "system" fn cb_sidecar_metadata_parse_error<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
-    unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_error(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); }
+    ffi_guard("SidecarMetadataParseError", (), move || unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_error(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); });
 }
 unsafe extern "system" fn cb_prepare_pipeline_complete<T: BrawCallback>(this: *mut c_void, user_data: *mut c_void, result: HRESULT) {
-    unsafe { (*cb_from_this::<T>(this)).state.prepare_pipeline_complete(user_data, result); }
+    ffi_guard("PreparePipelineComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.prepare_pipeline_complete(user_data, result); });
 }
 
 impl<T: BrawCallback> CallbackBox<T> {
@@ -151,7 +172,9 @@ pub(crate) struct DefaultCallback {
 
 impl BrawCallback for DefaultCallback {
     fn read_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
-        callback_complete(job, if result == S_OK {
+        // Result construction (`AddRef`) is deferred into a closure so it runs
+        // inside `callback_complete`'s panic firewall (R15).
+        callback_complete(job, move || if result == S_OK {
             ComPtr::new(frame).map(|mut x| unsafe { x.add_ref(); x })
         } else {
             check_hr(result).map(|_| unreachable!())
@@ -161,13 +184,13 @@ impl BrawCallback for DefaultCallback {
         }
     }
     fn decode_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) {
-        callback_complete(job, check_hr(result).map(|_| ()));
+        callback_complete(job, move || check_hr(result).map(|_| ()));
         if let Some(cb) = &self.user_callback {
             cb.decode_complete(job, result);
         }
     }
     fn process_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
-        callback_complete(job, if result == S_OK {
+        callback_complete(job, move || if result == S_OK {
             ComPtr::new(processed_image).map(|mut x| unsafe { x.add_ref(); x })
         } else {
             check_hr(result).map(|_| unreachable!())
@@ -177,28 +200,17 @@ impl BrawCallback for DefaultCallback {
         }
     }
     fn trim_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) {
-        callback_complete(job, check_hr(result).map(|_| ()));
+        callback_complete(job, move || check_hr(result).map(|_| ()));
         if let Some(cb) = &self.user_callback {
             cb.trim_complete(job, result);
         }
     }
     fn prepare_pipeline_complete(&self, user_data: *mut c_void, result: HRESULT) {
-        if user_data.is_null() {
-            if let Some(cb) = &self.user_callback {
-                cb.prepare_pipeline_complete(user_data, result);
-            }
-            return;
-        }
-        // Safety: `user_data` points to the State inside an Arc held by the Future.
-        let state: &State<()> = unsafe { &*(user_data as *const State<()>) };
-
-        // Store it and signal completion
-        {
-            let mut lock = state.result.lock().unwrap();
-            *lock = Some(check_hr(result).map(|_| ()));
-        }
-        state.done.store(true, Ordering::Release);
-        state.waker.wake();
+        // Claim-once + reclaim of the owned refcount handed to the SDK in
+        // `prepare_pipeline` (balances its `Arc::into_raw`). A null `user_data`
+        // — an SDK contract violation, since it was handed a non-null pointer —
+        // is logged and treated as a no-op inside `deliver_completion`.
+        deliver_completion::<()>(user_data, move || check_hr(result).map(|_| ()));
         if let Some(cb) = &self.user_callback {
             cb.prepare_pipeline_complete(user_data, result);
         }
