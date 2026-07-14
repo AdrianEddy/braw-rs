@@ -237,12 +237,16 @@ impl BlackmagicRawClip {
     }
     pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
         let mut job_ptr = std::ptr::null_mut();
+        // Borrow (`as_ref`) rather than move: consuming the `Option`s here would drop
+        // (COM `Release`) a sole-owned attributes object before `CreateJobTrim` runs.
+        // As owned params of this async fn they stay alive across the `.await` below,
+        // covering the whole job. (See `create_decode_process_future`.)
         self.raw.CreateJobTrim(
             file_name.as_ptr() as *const _,
             frame_index,
             frame_count,
-            clip_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()),
-            frame_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            frame_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
             &mut job_ptr
         )?;
 
@@ -283,9 +287,33 @@ impl BlackmagicRawFrame {
     /// await (or poll) the future for the `BlackmagicRawProcessedImage`.
     pub fn create_decode_process_future(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<DecodeProcessFuture, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
-        self.raw.CreateJobDecodeAndProcessFrame(clip_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), frame_processing_attributes.map_or(std::ptr::null_mut(), |f| f.as_raw()), &mut job_ptr)?;
+        // Borrow (`as_ref`) the processing attributes for the FFI call. The previous
+        // `map_or(.., |f| f.as_raw())` moved each `Option` INTO the closure, so the
+        // wrapper was dropped — COM `Release` — BEFORE `CreateJobDecodeAndProcessFrame`
+        // ran. A sole-owned frame-attributes object (refcount 1) was therefore freed
+        // and the SDK received a dangling pointer; clip attributes only survived
+        // because the caller happened to keep the original alive. `as_ref` borrows so
+        // both stay alive across the call, and their guards are bound to the returned
+        // future below.
+        self.raw.CreateJobDecodeAndProcessFrame(
+            clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            frame_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            &mut job_ptr,
+        )?;
 
-        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+        // The decode reads the processing attributes throughout async processing, not
+        // just at submit time, so the job must outlive this call's stack frame. Retain
+        // each attribute object's COM refcount for the future's whole lifetime by
+        // binding its guard to `parent_guards` — the same keep-alive the clip / frame /
+        // codec chain already rides. This makes `Some(attrs)` self-contained: the
+        // caller need not keep a separate reference alive until the decode completes.
+        let mut parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+        if let Some(c) = &clip_processing_attributes {
+            parent_guards = parent_guards.clone_and_add(c.raw.add_ref_and_get_guard());
+        }
+        if let Some(f) = &frame_processing_attributes {
+            parent_guards = parent_guards.clone_and_add(f.raw.add_ref_and_get_guard());
+        }
 
         let inner = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?;
         Ok(DecodeProcessFuture::new(inner, self.factory.clone(), parent_guards))
@@ -516,34 +544,34 @@ impl BlackmagicRawClipProcessingAttributes {
     pub fn clip_attribute_range(&self, attribute: BlackmagicRawClipProcessingAttribute) -> Result<(VariantValue, VariantValue, bool), BrawError> {
         let mut value_min = VARIANT::default();
         let mut value_max = VARIANT::default();
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetClipAttributeRange(attribute, &mut value_min, &mut value_max, &mut is_read_only)?;
-        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), is_read_only))
+        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), sdk_bool(is_read_only)))
     }
     pub fn clip_attribute_list(&self, attribute: BlackmagicRawClipProcessingAttribute) -> Result<(Vec<VariantValue>, bool), BrawError> {
         let mut count = 0;
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetClipAttributeList(attribute, std::ptr::null_mut(), &mut count, &mut is_read_only)?;
         if count == 0 {
-            return Ok((vec![], is_read_only));
+            return Ok((vec![], sdk_bool(is_read_only)));
         }
         let mut vec = vec![VARIANT::default(); count as usize];
         self.raw.GetClipAttributeList(attribute, vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
         let vec = vec.into_iter().map(|v| self.factory.lib.variant_to_rust(v)).collect();
-        Ok((vec, is_read_only))
+        Ok((vec, sdk_bool(is_read_only)))
     }
     pub fn iso_list(&self) -> Result<(Vec<u32>, bool), BrawError> {
         let mut count = 0;
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetISOList(std::ptr::null_mut(), &mut count, &mut is_read_only)?;
         if count == 0 {
-            return Ok((vec![], is_read_only));
+            return Ok((vec![], sdk_bool(is_read_only)));
         }
         let mut vec = vec![0u32; count as usize];
         self.raw.GetISOList(vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
-        Ok((vec, is_read_only))
+        Ok((vec, sdk_bool(is_read_only)))
     }
 }
 
@@ -551,34 +579,34 @@ impl BlackmagicRawFrameProcessingAttributes {
     pub fn frame_attribute_range(&self, attribute: BlackmagicRawFrameProcessingAttribute) -> Result<(VariantValue, VariantValue, bool), BrawError> {
         let mut value_min = VARIANT::default();
         let mut value_max = VARIANT::default();
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetFrameAttributeRange(attribute, &mut value_min, &mut value_max, &mut is_read_only)?;
-        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), is_read_only))
+        Ok((self.factory.lib.variant_to_rust(value_min), self.factory.lib.variant_to_rust(value_max), sdk_bool(is_read_only)))
     }
     pub fn frame_attribute_list(&self, attribute: BlackmagicRawFrameProcessingAttribute) -> Result<(Vec<VariantValue>, bool), BrawError> {
         let mut count = 0;
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetFrameAttributeList(attribute, std::ptr::null_mut(), &mut count, &mut is_read_only)?;
         if count == 0 {
-            return Ok((vec![], is_read_only));
+            return Ok((vec![], sdk_bool(is_read_only)));
         }
         let mut vec = vec![VARIANT::default(); count as usize];
         self.raw.GetFrameAttributeList(attribute, vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
         let vec = vec.into_iter().map(|v| self.factory.lib.variant_to_rust(v)).collect();
-        Ok((vec, is_read_only))
+        Ok((vec, sdk_bool(is_read_only)))
     }
     pub fn iso_list(&self) -> Result<(Vec<u32>, bool), BrawError> {
         let mut count = 0;
-        let mut is_read_only = false;
+        let mut is_read_only: SdkBool = Default::default();
         self.raw.GetISOList(std::ptr::null_mut(), &mut count, &mut is_read_only)?;
         if count == 0 {
-            return Ok((vec![], is_read_only));
+            return Ok((vec![], sdk_bool(is_read_only)));
         }
         let mut vec = vec![0u32; count as usize];
         self.raw.GetISOList(vec.as_mut_ptr(), &mut count, &mut is_read_only)?;
         vec.truncate(count as usize);
-        Ok((vec, is_read_only))
+        Ok((vec, sdk_bool(is_read_only)))
     }
 }
 

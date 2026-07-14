@@ -637,7 +637,7 @@ braw_interface! {
         /// Get pipeline used for decoding
         fn GetPipeline(pipeline: *mut BlackmagicRawPipeline, pipelineContextOut: *mut *mut c_void, pipelineCommandQueueOut: *mut *mut c_void) -> HRESULT;
         /// Verifies relevant hardware/DLLs are available for the specified pipeline
-        fn IsPipelineSupported(pipeline: BlackmagicRawPipeline, pipelineSupported: *mut bool) -> HRESULT;
+        fn IsPipelineSupported(pipeline: BlackmagicRawPipeline, pipelineSupported: *mut SdkBool) -> HRESULT;
         /// Sets the number of CPU threads to use while decoding (0 for default)
         fn SetCPUThreads(threadCount: u32) -> HRESULT;
         /// Gets the number of CPU threads to use while decoding
@@ -647,7 +647,7 @@ braw_interface! {
         /// If true, frame metadata will be written to only the relevant frame
         fn SetWriteMetadataPerFrame(writePerFrame: bool) -> HRESULT;
         /// Gets if the per-frame metadata will be written to only the relevant frame
-        fn GetWriteMetadataPerFrame(writePerFrame: *mut bool) -> HRESULT;
+        fn GetWriteMetadataPerFrame(writePerFrame: *mut SdkBool) -> HRESULT;
         /// Equivalent to querying the device for instruction set, pipeline, context and command queue then calling SetInstructionSet and SetPipeline
         fn SetFromDevice(pipelineDevice: *mut IBlackmagicRawPipelineDevice) -> HRESULT;
         /// Get the Blackmagic RAW SDK version
@@ -794,11 +794,11 @@ braw_interface! {
         /// Set the attribute
         fn SetClipAttribute(attribute: BlackmagicRawClipProcessingAttribute, value: *mut VARIANT) -> HRESULT;
         /// Get the clip processing attribute range for the specified attribute
-        fn GetClipAttributeRange(attribute: BlackmagicRawClipProcessingAttribute, valueMin: *mut VARIANT, valueMax: *mut VARIANT, isReadOnly: *mut bool) -> HRESULT;
+        fn GetClipAttributeRange(attribute: BlackmagicRawClipProcessingAttribute, valueMin: *mut VARIANT, valueMax: *mut VARIANT, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Get the clip processing attribute value list for the specified attribute
-        fn GetClipAttributeList(attribute: BlackmagicRawClipProcessingAttribute, array: *mut VARIANT, arrayElementCount: *mut u32, isReadOnly: *mut bool) -> HRESULT;
+        fn GetClipAttributeList(attribute: BlackmagicRawClipProcessingAttribute, array: *mut VARIANT, arrayElementCount: *mut u32, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Obtains a list of available ISOs (for the clip's analog gain) for GUI presentation
-        fn GetISOList(array: *mut u32, arrayElementCount: *mut u32, isReadOnly: *mut bool) -> HRESULT;
+        fn GetISOList(array: *mut u32, arrayElementCount: *mut u32, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Get the active 3D LUT
         fn GetPost3DLUT(lut: *mut *mut IBlackmagicRawPost3DLUT) -> HRESULT;
     }
@@ -825,11 +825,11 @@ braw_interface! {
         /// Set the attribute
         fn SetFrameAttribute(attribute: BlackmagicRawFrameProcessingAttribute, value: *mut VARIANT) -> HRESULT;
         /// Get the frame processing attribute range for the specified attribute
-        fn GetFrameAttributeRange(attribute: BlackmagicRawFrameProcessingAttribute, valueMin: *mut VARIANT, valueMax: *mut VARIANT, isReadOnly: *mut bool) -> HRESULT;
+        fn GetFrameAttributeRange(attribute: BlackmagicRawFrameProcessingAttribute, valueMin: *mut VARIANT, valueMax: *mut VARIANT, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Get the frame processing attribute value list for the specified attribute
-        fn GetFrameAttributeList(attribute: BlackmagicRawFrameProcessingAttribute, array: *mut VARIANT, arrayElementCount: *mut u32, isReadOnly: *mut bool) -> HRESULT;
+        fn GetFrameAttributeList(attribute: BlackmagicRawFrameProcessingAttribute, array: *mut VARIANT, arrayElementCount: *mut u32, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Obtains a list of available ISOs (for the frame's analog gain) for GUI presentation
-        fn GetISOList(array: *mut u32, arrayElementCount: *mut u32, isReadOnly: *mut bool) -> HRESULT;
+        fn GetISOList(array: *mut u32, arrayElementCount: *mut u32, isReadOnly: *mut SdkBool) -> HRESULT;
     }
     /// Frame attributes used during processing.
     ///
@@ -1298,9 +1298,9 @@ braw_interface! {
         /// Queries how many cards this movie was originally recorded on to
         fn GetMulticardFileCount(multicardFileCount: *mut u32) -> HRESULT;
         /// Queries if a particular card file from the original recording is present
-        fn IsMulticardFilePresent(index: u32, isMulticardFilePresent: *mut bool) -> HRESULT;
+        fn IsMulticardFilePresent(index: u32, isMulticardFilePresent: *mut SdkBool) -> HRESULT;
         /// Check for successfully parsed sidecar file, which is automatically loaded upon opening of a clip
-        fn GetSidecarFileAttached(isSidecarFileAttached: *mut bool) -> HRESULT;
+        fn GetSidecarFileAttached(isSidecarFileAttached: *mut SdkBool) -> HRESULT;
         /// Save metadata to sidecar file
         fn SaveSidecarFile() -> HRESULT;
         /// Reload metadata from sidecar file
@@ -1357,7 +1357,7 @@ braw_interface! {
         /// Create a job to read the frame's bitstream into memory with custom buffer
         fn CreateJobReadFrame(frameIndex: u64, bitStream: *mut c_void, bitStreamSizeBytes: u32, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
         /// Queries the timecode info for the clip
-        fn QueryTimecodeInfo(baseFrameIndex: *mut u32, isDropFrameTimecode: *mut bool) -> HRESULT;
+        fn QueryTimecodeInfo(baseFrameIndex: *mut u32, isDropFrameTimecode: *mut SdkBool) -> HRESULT;
     }
     /// Extended use of IBlackmagicRawClip, to pass custom bitstream.
     ///

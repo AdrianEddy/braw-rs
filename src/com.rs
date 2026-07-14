@@ -6,6 +6,31 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 use std::ops::{ Deref, DerefMut };
 
+/// The SDK's COM boolean out-parameter width.
+///
+/// On Windows the Blackmagic RAW COM ABI declares every `[out]` boolean as
+/// `BOOL*` — a 4-byte `int` (see `sdk/Win/Include/BlackmagicRawAPI.idl`). The
+/// Mac/Linux C++ interface genuinely uses `bool*` (1 byte). Declaring the
+/// out-parameter as a 1-byte `bool` on Windows lets the DLL's 4-byte store
+/// overrun the adjacent stack slot — e.g. the `arrayElementCount` variable
+/// declared right after `isReadOnly` in `GetClipAttributeList` — silently
+/// zeroing the count under release codegen (a layout-sensitive heisenbug that
+/// empties every attribute/ISO value list). Model the out-parameter at its true
+/// ABI width and narrow to `bool` in Rust.
+#[cfg(windows)]
+pub type SdkBool = i32;
+#[cfg(not(windows))]
+pub type SdkBool = bool;
+
+/// Narrow an SDK boolean out-parameter (`BOOL` on Windows, `bool` elsewhere) to
+/// a Rust `bool`.
+#[cfg(windows)]
+#[inline]
+pub fn sdk_bool(v: SdkBool) -> bool { v != 0 }
+#[cfg(not(windows))]
+#[inline]
+pub fn sdk_bool(v: SdkBool) -> bool { v }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GUID {
@@ -165,7 +190,7 @@ macro_rules! braw_interface {
                             let mut out1: braw_interface!(@iargpassret $impls2_ret1) = std::mem::zeroed();
                             let mut out2: braw_interface!(@iargpassret $impls2_ret2) = std::mem::zeroed();
                             let _hr = self.raw.$impls2_cm($(braw_interface!(@iargpass self; $impls2_argt,$impls2_argn),)* &mut out1, &mut out2)?;
-                            Ok((out1, out2))
+                            Ok((braw_interface!(@iargpassret2 self; $impls2_ret1,out1), braw_interface!(@iargpassret2 self; $impls2_ret2,out2)))
                         }
                     }
                 )*
@@ -177,7 +202,7 @@ macro_rules! braw_interface {
                             let mut out2: braw_interface!(@iargpassret $impls3_ret2) = std::mem::zeroed();
                             let mut out3: braw_interface!(@iargpassret $impls3_ret3) = std::mem::zeroed();
                             let _hr = self.raw.$impls3_cm($(braw_interface!(@iargpass self; $impls3_argt,$impls3_argn),)* &mut out1, &mut out2, &mut out3)?;
-                            Ok((out1, out2, out3))
+                            Ok((braw_interface!(@iargpassret2 self; $impls3_ret1,out1), braw_interface!(@iargpassret2 self; $impls3_ret2,out2), braw_interface!(@iargpassret2 self; $impls3_ret3,out3)))
                         }
                     }
                 )*
@@ -218,9 +243,13 @@ macro_rules! braw_interface {
 
     (@iargpassret String) => { *mut c_void };
     (@iargpassret VariantValue) => { VARIANT };
+    // A `bool` out-parameter is a COM `BOOL` (4 bytes) on Windows — allocate at
+    // that width so the SDK's store can't overrun the stack (see `SdkBool`).
+    (@iargpassret bool) => { $crate::SdkBool };
     (@iargpassret $t:ty) => { $t };
     (@iargpassret2 $self:ident; String,$o:expr) => { BrawString($o as *mut _).to_string() };
     (@iargpassret2 $self:ident; VariantValue,$o:expr) => { $self.factory.lib.variant_to_rust($o) };
+    (@iargpassret2 $self:ident; bool,$o:expr) => { $crate::sdk_bool($o) };
     (@iargpassret2 $self:ident; $t:ty,$o:expr) => { $o };
 }
 
