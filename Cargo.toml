@@ -18,7 +18,7 @@ futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"], optional = true }
 # Virtual-filesystem integration (decode clips from memory / custom sources).
 # Optional so `braw` has no hard dependency on the hooking engine.
-hookfs = { path = "../plthook/crates/hookfs", optional = true }
+hookfs = { version = "0.1", optional = true }
 
 [features]
 default = ["serde"]
