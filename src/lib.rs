@@ -237,12 +237,22 @@ impl BlackmagicRawClip {
     }
     pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
         let mut job_ptr = std::ptr::null_mut();
+        // Marshal the output path into the platform SDK string (BSTR on Windows,
+        // CFString on macOS, NUL-terminated UTF-8 on Linux), exactly as `open_clip`
+        // does. Passing `file_name.as_ptr()` — a non-NUL-terminated pointer to the
+        // Rust `&str`'s UTF-8 bytes — is a bug: the SDK reads it as its native string
+        // type, so on Windows the UTF-8 bytes are reinterpreted as UTF-16 (and, with
+        // no terminator, the read runs past the string into adjacent memory),
+        // producing a garbled separator-less name that resolves against the CWD on
+        // the real disk — a virtual-write disk leak. `in_str` is bound for the whole
+        // async fn so it outlives the `CreateJobTrim` call and the awaited job.
+        let in_str = BrawString::from(file_name);
         // Borrow (`as_ref`) rather than move: consuming the `Option`s here would drop
         // (COM `Release`) a sole-owned attributes object before `CreateJobTrim` runs.
         // As owned params of this async fn they stay alive across the `.await` below,
         // covering the whole job. (See `create_decode_process_future`.)
         self.raw.CreateJobTrim(
-            file_name.as_ptr() as *const _,
+            in_str.as_raw(),
             frame_index,
             frame_count,
             clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),

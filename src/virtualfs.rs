@@ -74,6 +74,11 @@ fn active() -> &'static Mutex<Option<Active>> {
 /// Installs on first use, discovering the SDK module by the **address** of
 /// `CreateBlackmagicRawFactoryInstance` (never a basename), and enabling
 /// `auto_rescan` so late-loaded decoder plugins are patched too.
+///
+/// The synthetic volume is installed **writable** (`allow_writes`, Phase 6): the SDK
+/// only ever writes when the application explicitly saves a sidecar or trims a clip,
+/// and those writes are serviced entirely from the in-memory VFS — a synthetic path
+/// still never touches disk. Read-only clips are unaffected.
 fn ensure_installed(factory: &Factory) -> Result<hookfs::Hookfs, BrawError> {
     let mut guard = active().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = guard.as_ref() {
@@ -82,7 +87,7 @@ fn ensure_installed(factory: &Factory) -> Result<hookfs::Hookfs, BrawError> {
     let address = factory.lib.factory_instance_address()?;
     let fs = hookfs::Hookfs::new();
     let install = fs
-        .install(hookfs::Options::for_module(address).auto_rescan(true))
+        .install(hookfs::Options::for_module(address).auto_rescan(true).allow_writes(true))
         .map_err(|e| BrawError::Other(format!("hookfs install failed: {e}")))?;
     *guard = Some(Active { fs: fs.clone(), _install: install, _pinned_lib: factory.lib.clone() });
     Ok(fs)
@@ -106,6 +111,14 @@ impl HookFsGuard {
     #[must_use]
     pub fn path_for(&self, logical_name: &str) -> PathBuf {
         self.fs.path_for(logical_name)
+    }
+
+    /// A byte-for-byte copy of the current contents of the writable virtual file at
+    /// synthetic `path` (e.g. a sidecar the SDK just saved), or `None` if it is not a
+    /// writable in-memory file. Read back without touching disk (Phase 6).
+    #[must_use]
+    pub fn read_virtual_path(&self, path: &Path) -> Option<Vec<u8>> {
+        self.fs.read_virtual_path(path)
     }
 }
 
@@ -137,7 +150,8 @@ pub struct VirtualClip {
     // the mounts are released.
     clip: BlackmagicRawClip,
     _mounts: Vec<hookfs::MountGuard>,
-    _fs: hookfs::Hookfs,
+    fs: hookfs::Hookfs,
+    primary: PathBuf,
 }
 
 impl VirtualClip {
@@ -145,6 +159,33 @@ impl VirtualClip {
     #[must_use]
     pub fn clip(&self) -> &BlackmagicRawClip {
         &self.clip
+    }
+
+    /// The synthetic path the primary clip was opened at.
+    #[must_use]
+    pub fn primary_path(&self) -> &Path {
+        &self.primary
+    }
+
+    /// The synthetic path of the clip's sidecar (same directory + `.sidecar`), the
+    /// path `SaveSidecarFile` writes to.
+    #[must_use]
+    pub fn sidecar_path(&self) -> PathBuf {
+        self.primary.with_extension("sidecar")
+    }
+
+    /// The shared mount context, e.g. to read back a written sidecar/output
+    /// ([`hookfs::Hookfs::read_virtual_path`]) or derive an output path.
+    #[must_use]
+    pub fn hookfs(&self) -> &hookfs::Hookfs {
+        &self.fs
+    }
+
+    /// A byte-for-byte copy of the writable virtual file at synthetic `path` (the
+    /// sidecar the SDK saved, a trim output), or `None`. Never touches disk.
+    #[must_use]
+    pub fn read_virtual_path(&self, path: &Path) -> Option<Vec<u8>> {
+        self.fs.read_virtual_path(path)
     }
 
     /// Split into the underlying [`BlackmagicRawClip`] and an opaque
@@ -157,7 +198,7 @@ impl VirtualClip {
     /// field order.
     #[must_use]
     pub fn into_parts(self) -> (BlackmagicRawClip, VirtualMounts) {
-        (self.clip, VirtualMounts { _mounts: self._mounts, _fs: self._fs })
+        (self.clip, VirtualMounts { _mounts: self._mounts, _fs: self.fs })
     }
 }
 
@@ -215,6 +256,30 @@ impl VirtualClipBuilder<'_> {
         Ok(self)
     }
 
+    /// Reserve a **writable** in-memory sibling under `logical_name` (Phase 6): an
+    /// empty file the SDK can write (a sidecar to re-save, a trim output) and that is
+    /// read back through the same synthetic path — never touching disk. Requires the
+    /// hooks to have been installed with `allow_writes` (they always are, via
+    /// [`ensure_installed`]).
+    ///
+    /// # Errors
+    /// Fails if the name is invalid.
+    pub fn writable(mut self, logical_name: &str) -> Result<Self, BrawError> {
+        let guard = self
+            .fs
+            .mount_writable(&self.scoped(logical_name))
+            .map_err(|e| BrawError::Other(format!("mount_writable `{logical_name}`: {e}")))?;
+        self.mounts.push(guard);
+        Ok(self)
+    }
+
+    /// The synthetic path a scoped `logical_name` maps to within this clip's
+    /// namespace (e.g. to pass a virtual output path to `CreateJobTrim`).
+    #[must_use]
+    pub fn scoped_path(&self, logical_name: &str) -> PathBuf {
+        self.fs.path_for(&self.scoped(logical_name))
+    }
+
     /// The synthetic path the primary clip will be opened at.
     #[must_use]
     pub fn primary_path(&self) -> PathBuf {
@@ -229,7 +294,7 @@ impl VirtualClipBuilder<'_> {
         let path = self.fs.path_for(&self.scoped(&self.primary));
         let path_str = path.to_str().ok_or(BrawError::InvalidArgument)?;
         let clip = self.codec.open_clip(path_str)?;
-        Ok(VirtualClip { clip, _mounts: self.mounts, _fs: self.fs })
+        Ok(VirtualClip { clip, _mounts: self.mounts, fs: self.fs, primary: path })
     }
 }
 
