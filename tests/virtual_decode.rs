@@ -6,10 +6,23 @@
 //! prove it matches the physical decode bit-for-bit — including concurrent read
 //! jobs and repeated opens — while no virtual path ever touches the real FS.
 //!
-//! Requires the Blackmagic RAW SDK from this repo (`sdk/Win/Libraries` +
-//! `sdk/Media`). Run with: `cargo test --features hookfs --test virtual_decode`.
+//! Requires the Blackmagic RAW SDK shipped in this repo and the `sdk/Media`
+//! sample. Run with: `cargo test --features hookfs --test virtual_decode`.
+//!
+//! Cross-platform: on Windows the SDK lives at `sdk/Win/Libraries`, on Linux the
+//! `.so` set lives at the repo root. The decode is CPU-only (no GPU pipeline is
+//! prepared), so it runs headless. The parity invariant is
+//! **physical == virtual on the same platform** — frame hashes are compared
+//! against the physical decode on the *current* OS, never across platforms (the
+//! SDK's SIMD/codec paths differ between OSes).
+//!
+//! On Linux the SDK `dlopen`s its decoder plugins (`libDecoder*.so`,
+//! `libInstructionSetServices*.so`) by bare name at runtime, so the directory
+//! holding them must be on the loader path — set `LD_LIBRARY_PATH` to the repo
+//! root when invoking (the standard BMD deployment mechanism; the test performs
+//! no environment mutation of its own).
 
-#![cfg(all(feature = "hookfs", target_os = "windows"))]
+#![cfg(all(feature = "hookfs", any(target_os = "windows", target_os = "linux")))]
 
 use braw::*;
 use std::io::Cursor;
@@ -29,8 +42,17 @@ fn sdk_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn dll_path() -> PathBuf {
-    sdk_dir().join("sdk/Win/Libraries/BlackmagicRawAPI.dll")
+/// Absolute path to the Blackmagic RAW SDK shared library shipped in this repo.
+/// The whole test module is gated to Windows/Linux, so exactly one arm is live.
+fn library_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        sdk_dir().join("sdk/Win/Libraries/BlackmagicRawAPI.dll")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        sdk_dir().join("libBlackmagicRawAPI.so")
+    }
 }
 
 fn clip_bytes() -> Vec<u8> {
@@ -72,11 +94,11 @@ async fn decode_hash(clip: &BlackmagicRawClip, idx: u64) -> Result<u64, BrawErro
 
 #[test]
 fn decode_braw_from_memory_matches_physical() -> Result<(), BrawError> {
-    assert!(dll_path().exists(), "SDK DLL missing at {}", dll_path().display());
+    assert!(library_path().exists(), "SDK library missing at {}", library_path().display());
 
     let bytes = clip_bytes();
     let sidecar = sidecar_bytes();
-    let factory = Factory::load_from(dll_path())?;
+    let factory = Factory::load_from(library_path())?;
 
     pollster::block_on(async {
         // ---- 1. PHYSICAL baseline (no hooks installed yet) ------------------
@@ -179,11 +201,11 @@ fn decode_braw_from_memory_matches_physical() -> Result<(), BrawError> {
 /// mount overwrites the first's node and dropping either breaks the other.
 #[test]
 fn same_logical_name_clips_are_independent() -> Result<(), BrawError> {
-    assert!(dll_path().exists(), "SDK DLL missing at {}", dll_path().display());
+    assert!(library_path().exists(), "SDK library missing at {}", library_path().display());
 
     let bytes = clip_bytes();
     let sidecar = sidecar_bytes();
-    let factory = Factory::load_from(dll_path())?;
+    let factory = Factory::load_from(library_path())?;
     let codec = factory.create_codec()?;
 
     // Physical baseline hash (no hooks in play).

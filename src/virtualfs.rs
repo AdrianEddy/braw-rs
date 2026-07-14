@@ -21,11 +21,11 @@
 //! # }
 //! ```
 
-use super::{BlackmagicRaw, BlackmagicRawClip, BrawError, Factory};
+use super::{BlackmagicRaw, BlackmagicRawClip, BrawError, Factory, RawLibrary};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A process-monotonic per-clip mount segment (`clip-<hex>`).
 ///
@@ -50,6 +50,18 @@ fn next_mount_id() -> String {
 struct Active {
     fs: hookfs::Hookfs,
     _install: hookfs::InstallGuard,
+    /// The exact SDK image the import patches were written into, pinned for the
+    /// process lifetime. Install-for-lifetime (R12) never restores those slots, so
+    /// it relies on the hooked image staying mapped: if the only `Factory`
+    /// referencing the SDK were dropped, `dlclose`/`FreeLibrary` would unload the
+    /// image and free its patched slots, yet `active()` would still report
+    /// "installed". A later `Factory::load_from` would then reload the SDK into a
+    /// fresh, **un-patched** image while `ensure_installed` short-circuits on the
+    /// stale `Active` — silently un-virtualizing the SDK's file I/O. Holding an
+    /// owning reference keeps the image mapped (and thus patched) so every later
+    /// `Factory::load_from` re-attaches (`dlopen` returns the same, already-hooked
+    /// image) rather than reloading an un-hooked one.
+    _pinned_lib: Arc<RawLibrary>,
 }
 
 fn active() -> &'static Mutex<Option<Active>> {
@@ -72,7 +84,7 @@ fn ensure_installed(factory: &Factory) -> Result<hookfs::Hookfs, BrawError> {
     let install = fs
         .install(hookfs::Options::for_module(address).auto_rescan(true))
         .map_err(|e| BrawError::Other(format!("hookfs install failed: {e}")))?;
-    *guard = Some(Active { fs: fs.clone(), _install: install });
+    *guard = Some(Active { fs: fs.clone(), _install: install, _pinned_lib: factory.lib.clone() });
     Ok(fs)
 }
 
@@ -134,6 +146,27 @@ impl VirtualClip {
     pub fn clip(&self) -> &BlackmagicRawClip {
         &self.clip
     }
+
+    /// Split into the underlying [`BlackmagicRawClip`] and an opaque
+    /// [`VirtualMounts`] keep-alive, so a caller that stores the clip in its own
+    /// field can hold the mounts separately.
+    ///
+    /// The caller **must** drop the returned clip before the [`VirtualMounts`]:
+    /// the mounts back the synthetic path the clip's (possibly async) read jobs
+    /// pull from — the same drop-order contract [`VirtualClip`] enforces via its
+    /// field order.
+    #[must_use]
+    pub fn into_parts(self) -> (BlackmagicRawClip, VirtualMounts) {
+        (self.clip, VirtualMounts { _mounts: self._mounts, _fs: self._fs })
+    }
+}
+
+/// Opaque keep-alive for a [`VirtualClip`]'s mounts + hook context, returned by
+/// [`VirtualClip::into_parts`]. Hold it for at least as long as the extracted
+/// [`BlackmagicRawClip`] is used and drop it only **after** the clip is dropped.
+pub struct VirtualMounts {
+    _mounts: Vec<hookfs::MountGuard>,
+    _fs: hookfs::Hookfs,
 }
 
 impl std::ops::Deref for VirtualClip {
