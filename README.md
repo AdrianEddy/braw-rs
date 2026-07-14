@@ -19,6 +19,7 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * **Async runtime agnostic**: works with any executor; use `pollster` to block when you want simplicity.
 * **Native docs**: all structs and enums are documented based on the official SDK documentation pdf
 * **Cross-platform**: Windows, Linux, macOS, and iOS.
+* **Virtual files** *(optional `hookfs` feature)*: decode — and write — `.braw` clips from arbitrary `Read + Seek` streams (in-memory, network, encrypted, …) without ever touching disk.
 
 **Based on Blackmagic RAW SDK 5.0.0**.
 
@@ -49,7 +50,7 @@ pollster = "0.3" # optional, for simple blocking
 
 A concise walkthrough: load the SDK, open a clip, inspect metadata, read & process a frame.
 
-```rust,no_run
+```rust no_run
 use braw::*;
 
 fn main() -> Result<(), BrawError> {
@@ -107,6 +108,109 @@ This crate **does not link** to the SDK at build time. At runtime it uses `liblo
 
 ---
 
+## Virtual files & streaming (`hookfs`)
+
+The Blackmagic RAW SDK exposes clip access **only by path string** — there is no
+`IStream` / open-from-buffer hook. The optional **`hookfs`** feature bridges that gap:
+it hands the SDK a *synthetic* path and transparently intercepts the file-I/O calls the
+SDK makes against it, servicing them from a stream **you** provide. The synthetic path
+never exists on disk.
+
+This lets you decode `.braw` clips straight from memory, a network source, an encrypted
+blob, an archive, or any other `Read + Seek` stream — no temp files, no copies. Writes
+(sidecar save/reload, `CreateJobTrim` output) are serviced entirely from an in-memory
+VFS too, so they never hit the physical filesystem either.
+
+Available on **Windows, Linux, macOS, and iOS** — the same platforms as the SDK
+bindings. The hooking engine patches the SDK's file I/O on each platform's native
+binary format (PE imports on Windows, ELF/Mach-O on Linux/Apple).
+
+### Enable it
+
+```toml
+[dependencies]
+braw = { version = "0.1", features = ["hookfs"] }
+```
+
+### Decode from an in-memory stream
+
+The simplest case — one clip, one stream:
+
+```rust ignore
+use braw::*;
+use std::io::Cursor;
+
+fn main() -> Result<(), BrawError> {
+    let braw = Factory::load_from(default_library_name())?;
+    let codec = braw.create_codec()?;
+
+    // Bytes from anywhere: an HTTP body, a decrypted buffer, an mmap, …
+    let bytes = std::fs::read("A001.braw").unwrap();
+
+    // `open_clip_from` mounts the stream under a synthetic path and opens it.
+    // The returned `VirtualClip` derefs to `BlackmagicRawClip`, so every clip
+    // method is available directly.
+    let clip = codec.open_clip_from("A001.braw", Cursor::new(bytes))?;
+    println!("{}x{}, {} frames", clip.width()?, clip.height()?, clip.frame_count()?);
+    Ok(())
+}
+```
+
+### Clips with sidecars or multicard parts
+
+A clip's `.sidecar` is read during `OpenClip`, and spanned/multicard clips reference
+sibling files. Mount every sibling with the builder **before** calling `open()`:
+
+```rust ignore
+use braw::*;
+use std::io::Cursor;
+
+let clip = codec
+    .virtual_clip("A001.braw")?
+    .file("A001.braw",    Cursor::new(braw_bytes))?
+    .file("A001.sidecar", Cursor::new(sidecar_bytes))?  // read during OpenClip
+    .file("A001_2.braw",  Cursor::new(part2_bytes))?    // multicard / spanned sibling
+    .open()?;
+```
+
+Every sibling is namespaced under a unique per-clip directory, so opening two clips with
+the same logical name (e.g. two cards' shared `A001.braw`) never collides, and they can
+be decoded concurrently on separate threads.
+
+### Writable output — no disk
+
+Reserve an in-memory writable file, let the SDK write to it (sidecar re-save, a trim
+output), then read the bytes back — all without touching disk:
+
+```rust ignore
+let clip = codec
+    .virtual_clip("A001.braw")?
+    .file("A001.braw", Cursor::new(braw_bytes))?
+    .open()?;
+
+// Edit metadata and save the sidecar into the virtual FS.
+clip.set_metadata("reel", VariantValue::String("HERO".into()))?;
+clip.save_sidecar_file()?;
+
+// Read the saved sidecar bytes straight back from memory — never touching disk.
+let sidecar_bytes = clip.read_virtual_path(&clip.sidecar_path());
+```
+
+### How it works
+
+`hookfs` installs its hooks into the loaded SDK module **once per process**, discovering
+the module by the address of a known SDK export (never a fragile basename) so late-loaded
+decoder plugins are patched too. Hooks persist for the process lifetime; mounts come and
+go with your `VirtualClip`s. See `src/virtualfs.rs` for the full API surface
+(`Factory::enable_virtual_files`, `BlackmagicRaw::virtual_clip` / `open_clip_from`,
+`VirtualClip`, `VirtualClipBuilder`).
+
+> On **Linux**, the SDK `dlopen`s its decoder plugins (`libDecoder*.so`,
+> `libInstructionSetServices*.so`) by bare name at runtime, so the directory holding them
+> must be on `LD_LIBRARY_PATH` (the standard Blackmagic deployment mechanism).
+
+---
+
 ## FAQ
 
 **Why not use bindgen?**
@@ -117,6 +221,10 @@ Yes. Use `pollster::block_on` or your runtime’s `block_on`.
 
 **Can I use my own callback?**
 Yes. Use `codec.set_callback()` and implement `BrawCallback` for your type.
+
+**Can I decode a clip that isn't on disk (in memory, over the network, encrypted)?**
+Yes — enable the `hookfs` feature and use `open_clip_from` / `virtual_clip`. See
+[Virtual files & streaming](#virtual-files--streaming-hookfs).
 
 **Which SDK version is supported?**
 **5.0.0**. Other versions may work but are not guaranteed.
