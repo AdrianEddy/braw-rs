@@ -11,15 +11,13 @@ use std::sync::Arc;
 mod callback;  pub use callback::*;
 mod com;       pub use com::*;
 mod error;     pub use error::*;
+mod file;      pub use file::*;
 mod future;    pub use future::*;
 mod iterators; pub use iterators::*;
 mod os;        pub use os::*;
 mod sdk;       pub use sdk::*;
 mod string;    pub use string::*;
 mod variant;   pub use variant::*;
-
-#[cfg(feature = "hookfs")]
-mod virtualfs; #[cfg(feature = "hookfs")] pub use virtualfs::*;
 
 #[cfg(target_os = "windows")]
 use libloading::os::windows as dl;
@@ -69,20 +67,6 @@ impl RawLibrary {
             ComPtr::new(create())
         }
     }
-
-    /// The process address of the `CreateBlackmagicRawFactoryInstance` export.
-    ///
-    /// `hookfs` discovers the SDK module by **an address inside it** (not a
-    /// basename), so this is the anchor used to scope the import hooks to exactly
-    /// the Blackmagic RAW image (impl-hookfs.md §5.4/§10).
-    #[cfg(feature = "hookfs")]
-    pub fn factory_instance_address(&self) -> Result<*const c_void, BrawError> {
-        unsafe {
-            let create: dl::Symbol<BlackmagicCreateFn> =
-                self.lib.get(b"CreateBlackmagicRawFactoryInstance\0")?;
-            Ok(*create as usize as *const c_void)
-        }
-    }
 }
 
 /// Use this to create one or more Codec objects.
@@ -113,8 +97,25 @@ impl Factory {
     }
 
     /// Create a codec from the factory
+    ///
+    /// Fails with [`BrawError::UnsupportedSdkVersion`] when the loaded library does
+    /// not implement the Blackmagic RAW SDK 6.0 codec interface these bindings are
+    /// built on — an older SDK, or a newer one that changed it again.
     pub fn create_codec(&self) -> Result<BlackmagicRaw, BrawError> {
         let raw: ComPtr<IBlackmagicRaw> = braw_out_ptr!(|pp| self.factory.CreateCodec(pp));
+
+        // The codec's IID changes whenever its vtable does. A library of another
+        // version hands back a codec with a different method layout — calling into
+        // it (even the `SetCallback` below) would jump to the wrong slot — so confirm
+        // it answers to the 6.0 IID before touching anything else. Only
+        // `E_NOINTERFACE` means another version; any other failure is the call's own.
+        let mut current: *mut c_void = std::ptr::null_mut();
+        let hr = unsafe { ((*raw.vtbl).parent.QueryInterface)(raw.as_raw() as _, IBlackmagicRaw::iid(), &mut current) };
+        if hr == E_NOINTERFACE {
+            return Err(BrawError::UnsupportedSdkVersion(self.camera_support_version(&raw)));
+        }
+        check_hr(hr)?;
+        drop(ComPtr::new(current as *mut IBlackmagicRaw)?);
 
         let codec = BlackmagicRaw {
             raw,
@@ -147,6 +148,26 @@ impl Factory {
         let geom = braw_out_ptr!(|pp| self.factory.CreateClipGeometry(pp));
         Ok(BlackmagicRawClipGeometry { raw: geom, factory: self.clone(), parent_guards: vec![].into() } )
     }
+
+    /// The loaded library's camera support version, read through
+    /// `IBlackmagicRawConfiguration` — the one interface whose IID and layout are the
+    /// same in every SDK from 4.2 to 6.0, so it is safe to call on a library the
+    /// bindings do not otherwise support ("unknown" from one that changed it too).
+    /// (`GetVersion` would be the natural choice, but the 5.0 and 6.0 libraries both
+    /// answer it with "0.0".)
+    fn camera_support_version(&self, codec: &ComPtr<IBlackmagicRaw>) -> String {
+        let mut ptr = std::ptr::null_mut();
+        let hr = unsafe { ((*codec.vtbl).parent.QueryInterface)(codec.as_raw() as _, IBlackmagicRawConfiguration::iid(), &mut ptr) };
+        if hr != S_OK {
+            return "unknown".into();
+        }
+        let Ok(configuration) = ComPtr::new(ptr as *mut IBlackmagicRawConfiguration) else { return "unknown".into() };
+        let mut version = std::ptr::null_mut();
+        match configuration.GetCameraSupportVersion(&mut version) {
+            Ok(_) => unsafe { take_sdk_string(version) },
+            Err(_) => "unknown".into(),
+        }
+    }
 }
 unsafe impl Send for Factory {}
 unsafe impl Sync for Factory {}
@@ -162,11 +183,29 @@ impl BlackmagicRaw {
         let clip = braw_out_ptr!(|pp| self.raw.OpenClipWithGeometry(in_str.as_raw(), geometry.as_raw(), pp));
         Ok(BlackmagicRawClip { raw: clip, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
     }
+    /// Open a clip read through `file` (see the [`file`](crate::BrawFile) traits).
+    /// The clip keeps `file` alive for its whole lifetime.
+    pub fn open_clip_from_file(&self, file: &BlackmagicRawFile) -> Result<BlackmagicRawClip, BrawError> {
+        let clip = braw_out_ptr!(|pp| self.raw.OpenClipFromFile(file.as_raw(), pp));
+        Ok(self.clip_from_file(clip, file))
+    }
+    /// Open a clip read through `file`, with `geometry` applied regardless of the clip's metadata.
+    pub fn open_clip_from_file_with_geometry(&self, file: &BlackmagicRawFile, geometry: BlackmagicRawClipGeometry) -> Result<BlackmagicRawClip, BrawError> {
+        let clip = braw_out_ptr!(|pp| self.raw.OpenClipFromFileWithGeometry(file.as_raw(), geometry.as_raw(), pp));
+        Ok(self.clip_from_file(clip, file))
+    }
+    fn clip_from_file(&self, clip: ComPtr<IBlackmagicRawClip>, file: &BlackmagicRawFile) -> BlackmagicRawClip {
+        // The file is the clip's byte source: every read job the clip (or a frame
+        // future cloned from it) can still issue must find it alive.
+        let parent_guards = self.parent_guards.clone_and_extend([self.raw.add_ref_and_get_guard(), file.add_ref_and_get_guard()]);
+        BlackmagicRawClip { raw: clip, factory: self.factory.clone(), parent_guards }
+    }
 
     // TODO: this is replacing the callback for all codec instances, which is not great and not what the user expects
     pub fn set_callback<T: BrawCallback>(&mut self, callback: T) -> Result<(), BrawError> {
-        let dcb = unsafe { &mut *(self.factory.default_callback.as_mut_ptr() as *mut CallbackBox<DefaultCallback>) };
-        dcb.state.user_callback = Some(Box::new(callback));
+        // FIXME: unsound while a callback runs on an SDK thread (see the TODO above).
+        let dcb = unsafe { &mut *self.factory.default_callback.state_ptr() };
+        dcb.user_callback = Some(Box::new(callback));
         Ok(())
     }
 
@@ -222,7 +261,7 @@ impl BlackmagicRawClip {
     }
 
     /// Submit a read-frame job and return a `'static` [`ReadFrameFuture`]
-    /// for its completion — the pipeline-friendly form of [`read_frame`].
+    /// for its completion — the pipeline-friendly form of [`read_frame`](Self::read_frame).
     /// The job is submitted immediately; await (or poll) the future for
     /// the `BlackmagicRawFrame`. Unlike `read_frame` the future borrows
     /// nothing from `self`, so a scheduler can keep many in flight.
@@ -235,6 +274,16 @@ impl BlackmagicRawClip {
         let inner = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?;
         Ok(ReadFrameFuture::new(inner, self.factory.clone(), parent_guards))
     }
+    /// Read up to `max_sample_count` sample frames of audio, starting at `sample_index`.
+    pub async fn read_audio(&self, sample_index: u64, max_sample_count: u64) -> Result<BlackmagicRawAudioBuffer, BrawError> {
+        let mut job_ptr = std::ptr::null_mut();
+        self.raw.CreateJobReadAudio(sample_index, max_sample_count, &mut job_ptr)?;
+
+        let parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
+
+        let buffer: ComPtr<IBlackmagicRawAudioBuffer> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await?;
+        Ok(BlackmagicRawAudioBuffer { raw: buffer, factory: self.factory.clone(), parent_guards })
+    }
     pub async fn trim(&self, file_name: &str, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
         let mut job_ptr = std::ptr::null_mut();
         // Marshal the output path into the platform SDK string (BSTR on Windows,
@@ -243,9 +292,9 @@ impl BlackmagicRawClip {
         // Rust `&str`'s UTF-8 bytes — is a bug: the SDK reads it as its native string
         // type, so on Windows the UTF-8 bytes are reinterpreted as UTF-16 (and, with
         // no terminator, the read runs past the string into adjacent memory),
-        // producing a garbled separator-less name that resolves against the CWD on
-        // the real disk — a virtual-write disk leak. `in_str` is bound for the whole
-        // async fn so it outlives the `CreateJobTrim` call and the awaited job.
+        // producing a garbled separator-less name that resolves against the CWD.
+        // `in_str` is bound for the whole async fn so it outlives the `CreateJobTrim`
+        // call and the awaited job.
         let in_str = BrawString::from(file_name);
         // Borrow (`as_ref`) rather than move: consuming the `Option`s here would drop
         // (COM `Release`) a sole-owned attributes object before `CreateJobTrim` runs.
@@ -253,6 +302,22 @@ impl BlackmagicRawClip {
         // covering the whole job. (See `create_decode_process_future`.)
         self.raw.CreateJobTrim(
             in_str.as_raw(),
+            frame_index,
+            frame_count,
+            clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            frame_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            &mut job_ptr
+        )?;
+
+        CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await
+    }
+    /// As [`trim`](Self::trim), writing the trimmed clip through `destination`.
+    pub async fn trim_to_file(&self, destination: &BlackmagicRawFile, frame_index: u64, frame_count: u64, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
+        let mut job_ptr = std::ptr::null_mut();
+        // `destination` and the attributes are borrowed for the whole async fn, so
+        // they outlive the awaited job (see `trim`).
+        self.raw.CreateJobTrimToFile(
+            destination.as_raw(),
             frame_index,
             frame_count,
             clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
@@ -277,6 +342,63 @@ impl BlackmagicRawClipEx {
         let frame: ComPtr<IBlackmagicRawFrame> = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, hints)?.await?;
         Ok(BlackmagicRawFrame { raw: frame, factory: self.factory.clone(), parent_guards })
     }
+    /// Trim every `frame_step`th frame of `frame_count` frames from `frame_index` to a
+    /// new `.braw` at `file_path`, played back at `frame_rate`.
+    #[allow(clippy::too_many_arguments)] // mirrors the SDK call
+    pub async fn trim(&self, file_path: &str, frame_index: u64, frame_count: u64, frame_step: u32, frame_rate: f32, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
+        let mut job_ptr = std::ptr::null_mut();
+        // The path string and the attributes are bound for the whole async fn, so
+        // they outlive the awaited job (see `BlackmagicRawClip::trim`).
+        let in_str = BrawString::from(file_path);
+        self.raw.CreateJobTrim(
+            in_str.as_raw(),
+            frame_index,
+            frame_count,
+            frame_step,
+            frame_rate,
+            clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            frame_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            &mut job_ptr
+        )?;
+
+        CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await
+    }
+    /// As [`trim`](Self::trim), writing the trimmed clip through `destination`.
+    #[allow(clippy::too_many_arguments)] // mirrors the SDK call
+    pub async fn trim_to_file(&self, destination: &BlackmagicRawFile, frame_index: u64, frame_count: u64, frame_step: u32, frame_rate: f32, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<(), BrawError> {
+        let mut job_ptr = std::ptr::null_mut();
+        self.raw.CreateJobTrimToFile(
+            destination.as_raw(),
+            frame_index,
+            frame_count,
+            frame_step,
+            frame_rate,
+            clip_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            frame_processing_attributes.as_ref().map_or(std::ptr::null_mut(), |f| f.as_raw()),
+            &mut job_ptr
+        )?;
+
+        CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?.await
+    }
+    /// Where the audio chunk holding `sample_index` lives in the file.
+    pub fn audio_chunk_info(&self, sample_index: u64) -> Result<AudioChunkInfo, BrawError> {
+        let mut info = AudioChunkInfo::default();
+        self.raw.GetAudioChunkInfo(sample_index, &mut info.size_bytes, &mut info.offset_bytes, &mut info.sample_count, &mut info.start_sample_index)?;
+        Ok(info)
+    }
+}
+
+/// The location of one audio chunk in a clip's file (see [`BlackmagicRawClipEx::audio_chunk_info`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub struct AudioChunkInfo {
+    /// Size of the chunk in bytes
+    pub size_bytes: u32,
+    /// Offset of the chunk in the file, in bytes
+    pub offset_bytes: u64,
+    /// Number of sample frames in the chunk
+    pub sample_count: u64,
+    /// Index of the chunk's first sample frame
+    pub start_sample_index: u64,
 }
 
 impl BlackmagicRawFrame {
@@ -293,7 +415,7 @@ impl BlackmagicRawFrame {
 
     /// Submit a decode-and-process job and return a `'static`
     /// [`DecodeProcessFuture`] for its completion — the pipeline-friendly
-    /// form of [`decode_and_process`]. The job is submitted immediately;
+    /// form of [`decode_and_process`](Self::decode_and_process). The job is submitted immediately;
     /// await (or poll) the future for the `BlackmagicRawProcessedImage`.
     pub fn create_decode_process_future(&self, clip_processing_attributes: Option<BlackmagicRawClipProcessingAttributes>, frame_processing_attributes: Option<BlackmagicRawFrameProcessingAttributes>) -> Result<DecodeProcessFuture, BrawError> {
         let mut job_ptr = std::ptr::null_mut();
@@ -317,13 +439,12 @@ impl BlackmagicRawFrame {
         // binding its guard to `parent_guards` — the same keep-alive the clip / frame /
         // codec chain already rides. This makes `Some(attrs)` self-contained: the
         // caller need not keep a separate reference alive until the decode completes.
-        let mut parent_guards = self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard());
-        if let Some(c) = &clip_processing_attributes {
-            parent_guards = parent_guards.clone_and_add(c.raw.add_ref_and_get_guard());
-        }
-        if let Some(f) = &frame_processing_attributes {
-            parent_guards = parent_guards.clone_and_add(f.raw.add_ref_and_get_guard());
-        }
+        let parent_guards = self.parent_guards.clone_and_extend(
+            [Some(self.raw.add_ref_and_get_guard()),
+             clip_processing_attributes.as_ref().map(|c| c.raw.add_ref_and_get_guard()),
+             frame_processing_attributes.as_ref().map(|f| f.raw.add_ref_and_get_guard())]
+            .into_iter().flatten()
+        );
 
         let inner = CallbackFuture::create_from_job(ComPtr::new(job_ptr)?, &[])?;
         Ok(DecodeProcessFuture::new(inner, self.factory.clone(), parent_guards))
@@ -439,6 +560,31 @@ impl BlackmagicRawPost3DLUT {
             return Err(BrawError::NullValue);
         }
         Ok((typ, ptr as *const c_void))
+    }
+    /// Write the LUT as a `.cube` file through `file`.
+    pub fn write_cube_to_file(&self, file: &BlackmagicRawFile) -> Result<(), BrawError> {
+        self.raw.WriteCubeToFile(file.as_raw())?;
+        Ok(())
+    }
+}
+
+impl BlackmagicRawAudioBuffer {
+    /// The buffer's interleaved little-endian PCM samples: sample frames of
+    /// [`channel_count`](Self::channel_count) samples, [`bit_depth`](Self::bit_depth)
+    /// bits each.
+    pub fn samples(&self) -> Result<&[u8], BrawError> {
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let mut size: u32 = 0;
+        self.raw.GetAudioSamples(&mut ptr, &mut size)?;
+        if size == 0 {
+            return Ok(&[]);
+        }
+        if ptr.is_null() {
+            return Err(BrawError::NullValue);
+        }
+        // SAFETY: the SDK owns `size` bytes at `ptr` for as long as the buffer lives,
+        // which the returned borrow of `self` guarantees.
+        Ok(unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) })
     }
 }
 

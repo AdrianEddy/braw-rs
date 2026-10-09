@@ -42,8 +42,8 @@ impl<T> State<T> {
 /// / prepare-pipeline) completion callback.
 ///
 /// # Ownership & lifetime
-/// The SDK co-owns the callback [`State`] via an owned refcount handed out at
-/// construction (see [`State`] and [`CallbackFuture::create_from_job`]). This is
+/// The SDK co-owns the callback `State` via an owned refcount handed out at
+/// construction (see `State` and [`CallbackFuture::create_from_job`]). This is
 /// what makes the future `'static` and safe to drop early.
 ///
 /// # Cancellation semantics

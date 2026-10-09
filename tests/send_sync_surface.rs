@@ -31,6 +31,18 @@ fn read_only_interfaces_are_send_sync() {
     assert_impl_all!(BlackmagicRawClipPDAFData:                 Send, Sync);
     assert_impl_all!(BlackmagicRawPost3DLUT:                    Send, Sync);
     assert_impl_all!(BlackmagicRawToneCurve:                    Send, Sync);
+    assert_impl_all!(BlackmagicRawAudioBuffer:                  Send, Sync);
+}
+
+/// Custom file I/O objects are called from the SDK's worker threads concurrently.
+#[test]
+fn custom_file_io_is_send_sync() {
+    assert_impl_all!(BlackmagicRawFile:                         Send, Sync);
+    assert_impl_all!(BytesFile<Vec<u8>>:                        Send, Sync);
+    assert_impl_all!(StreamFile<std::fs::File>:                 Send, Sync);
+    assert_impl_all!(MemoryFile:                                Send, Sync);
+    assert_impl_all!(FileSet:                                   Send, Sync);
+    assert_impl_all!(NoCompanions:                              Send, Sync);
 }
 
 #[test]

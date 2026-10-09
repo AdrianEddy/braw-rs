@@ -4,7 +4,12 @@
 #[cfg(target_os = "windows")]
 mod abi {
     pub use windows_sys::core::{ BSTR, HRESULT };
-    pub use windows_sys::Win32::Foundation::{ S_FALSE, S_OK, E_POINTER, SysAllocStringLen, SysFreeString, SysStringLen };
+    pub use windows_sys::Win32::Foundation::{ S_FALSE, S_OK, E_POINTER, E_FAIL, E_NOTIMPL, E_INVALIDARG, E_NOINTERFACE, E_UNEXPECTED, E_OUTOFMEMORY, E_ACCESSDENIED, SysAllocStringLen, SysFreeString, SysStringLen };
+
+    /// `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`.
+    pub const E_FILE_NOT_FOUND: HRESULT = 0x8007_0002u32 as i32;
+    /// `HRESULT_FROM_WIN32(ERROR_FILE_EXISTS)`.
+    pub const E_FILE_EXISTS: HRESULT = 0x8007_0050u32 as i32;
     pub use windows_sys::Win32::System::Variant::*;
     pub use windows_sys::Win32::System::Ole::*;
     pub use windows_sys::Win32::System::Com::{ SAFEARRAY, SAFEARRAYBOUND };
@@ -20,8 +25,19 @@ mod abi {
     pub type HRESULT = i32; // standard COM-style HRESULT
     pub const S_OK: HRESULT = 0;
     pub const S_FALSE: HRESULT = 1;
-    //pub const E_FAIL: HRESULT = 0x8000_0008u32 as i32;
+    // The SDK's own COM error set (`LinuxCOM.h`; CoreFoundation's `CFPlugInCOM.h`
+    // on Apple uses the same values) — disjoint from Windows' `winerror.h`.
+    pub const E_UNEXPECTED: HRESULT = 0x8000_FFFFu32 as i32;
+    pub const E_NOTIMPL: HRESULT = 0x8000_0001u32 as i32;
+    pub const E_OUTOFMEMORY: HRESULT = 0x8000_0002u32 as i32;
+    pub const E_INVALIDARG: HRESULT = 0x8000_0003u32 as i32;
+    pub const E_NOINTERFACE: HRESULT = 0x8000_0004u32 as i32;
     pub const E_POINTER: HRESULT = 0x8000_0005u32 as i32;
+    pub const E_FAIL: HRESULT = 0x8000_0008u32 as i32;
+    pub const E_ACCESSDENIED: HRESULT = 0x8000_0009u32 as i32;
+    // No file-specific codes exist in that set.
+    pub const E_FILE_NOT_FOUND: HRESULT = E_FAIL;
+    pub const E_FILE_EXISTS: HRESULT = E_FAIL;
 
     pub type SafeArrayBoundType = c_long;
 

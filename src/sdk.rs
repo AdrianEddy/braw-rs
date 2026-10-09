@@ -5,24 +5,24 @@
 #![allow(non_snake_case)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-// Based on Blackmagic RAW SDK 5.0.0
+// Based on Blackmagic RAW SDK 6.0
 
 pub use crate::*;
 use core::ffi::c_void;
 
-pub(crate) const IID_IBlackmagicRaw:                          GUID = GUID::new([/* 558ABA39-B344-4E9B-A484-116CF2A4B5C6 */ 0x55,0x8A,0xBA,0x39,0xB3,0x44,0x4E,0x9B,0xA4,0x84,0x11,0x6C,0xF2,0xA4,0xB5,0xC6 ]);
+pub(crate) const IID_IBlackmagicRaw:                          GUID = GUID::new([/* C25C15E2-D1D0-4743-9EA8-F21F69751AF3 */ 0xC2,0x5C,0x15,0xE2,0xD1,0xD0,0x47,0x43,0x9E,0xA8,0xF2,0x1F,0x69,0x75,0x1A,0xF3 ]);
 pub(crate) const IID_IBlackmagicRawFactory:                   GUID = GUID::new([/* 78DEEB84-98C9-434A-B7E5-7AACC2988399 */ 0x78,0xDE,0xEB,0x84,0x98,0xC9,0x43,0x4A,0xB7,0xE5,0x7A,0xAC,0xC2,0x98,0x83,0x99 ]);
 pub(crate) const IID_IBlackmagicRawPipelineIterator:          GUID = GUID::new([/* 051ED792-3D9D-4ED0-BB1F-3873E08773CB */ 0x05,0x1E,0xD7,0x92,0x3D,0x9D,0x4E,0xD0,0xBB,0x1F,0x38,0x73,0xE0,0x87,0x73,0xCB ]);
 pub(crate) const IID_IBlackmagicRawPipelineDeviceIterator:    GUID = GUID::new([/* 32D3385F-06EE-4260-82EB-2BABFFFACED8 */ 0x32,0xD3,0x38,0x5F,0x06,0xEE,0x42,0x60,0x82,0xEB,0x2B,0xAB,0xFF,0xFA,0xCE,0xD8 ]);
 pub(crate) const IID_IBlackmagicRawOpenGLInteropHelper:       GUID = GUID::new([/* 86444C8A-4398-4364-9166-7D10F41C315E */ 0x86,0x44,0x4C,0x8A,0x43,0x98,0x43,0x64,0x91,0x66,0x7D,0x10,0xF4,0x1C,0x31,0x5E ]);
-pub(crate) const IID_IBlackmagicRawPipelineDevice:            GUID = GUID::new([/* 5C7B0A9B-CF2C-4AB3-84C1-E1C7902360C8 */ 0x5C,0x7B,0x0A,0x9B,0xCF,0x2C,0x4A,0xB3,0x84,0xC1,0xE1,0xC7,0x90,0x23,0x60,0xC8 ]);
+pub(crate) const IID_IBlackmagicRawPipelineDevice:            GUID = GUID::new([/* 078F1902-C143-4A49-A3C7-3408C755100A */ 0x07,0x8F,0x19,0x02,0xC1,0x43,0x4A,0x49,0xA3,0xC7,0x34,0x08,0xC7,0x55,0x10,0x0A ]);
 pub(crate) const IID_IBlackmagicRawToneCurve:                 GUID = GUID::new([/* 7E40C13D-3575-46B5-B2B7-85DAE1EEFD77 */ 0x7E,0x40,0xC1,0x3D,0x35,0x75,0x46,0xB5,0xB2,0xB7,0x85,0xDA,0xE1,0xEE,0xFD,0x77 ]);
 pub(crate) const IID_IBlackmagicRawConfiguration:             GUID = GUID::new([/* 267E9866-FB40-4BFB-8BF8-96EA3F7DA36E */ 0x26,0x7E,0x98,0x66,0xFB,0x40,0x4B,0xFB,0x8B,0xF8,0x96,0xEA,0x3F,0x7D,0xA3,0x6E ]);
 pub(crate) const IID_IBlackmagicRawConfigurationEx:           GUID = GUID::new([/* ACE9078F-ABA0-4B26-A954-EDA108DADA5A */ 0xAC,0xE9,0x07,0x8F,0xAB,0xA0,0x4B,0x26,0xA9,0x54,0xED,0xA1,0x08,0xDA,0xDA,0x5A ]);
 pub(crate) const IID_IBlackmagicRawClipGeometry:              GUID = GUID::new([/* 22717196-36AE-4B8A-B5CC-24292F9660F0 */ 0x22,0x71,0x71,0x96,0x36,0xAE,0x4B,0x8A,0xB5,0xCC,0x24,0x29,0x2F,0x96,0x60,0xF0 ]);
 pub(crate) const IID_IBlackmagicRawResourceManager:           GUID = GUID::new([/* 3C5C3C4A-812C-4AF0-99F0-06C6E197C189 */ 0x3C,0x5C,0x3C,0x4A,0x81,0x2C,0x4A,0xF0,0x99,0xF0,0x06,0xC6,0xE1,0x97,0xC1,0x89 ]);
 pub(crate) const IID_IBlackmagicRawMetadataIterator:          GUID = GUID::new([/* F85AE78D-5DC2-40BC-8C1D-D0D805523ADA */ 0xF8,0x5A,0xE7,0x8D,0x5D,0xC2,0x40,0xBC,0x8C,0x1D,0xD0,0xD8,0x05,0x52,0x3A,0xDA ]);
-pub(crate) const IID_IBlackmagicRawClipProcessingAttributes:  GUID = GUID::new([/* 1F53C8AE-2295-4C8E-B17F-5931F4F146AC */ 0x1F,0x53,0xC8,0xAE,0x22,0x95,0x4C,0x8E,0xB1,0x7F,0x59,0x31,0xF4,0xF1,0x46,0xAC ]);
+pub(crate) const IID_IBlackmagicRawClipProcessingAttributes:  GUID = GUID::new([/* 7E5806E1-40B3-4DAD-8D03-5E294E65AC61 */ 0x7E,0x58,0x06,0xE1,0x40,0xB3,0x4D,0xAD,0x8D,0x03,0x5E,0x29,0x4E,0x65,0xAC,0x61 ]);
 pub(crate) const IID_IBlackmagicRawFrameProcessingAttributes: GUID = GUID::new([/* 5F7C5C0F-7138-445A-9D0D-6111B6409D17 */ 0x5F,0x7C,0x5C,0x0F,0x71,0x38,0x44,0x5A,0x9D,0x0D,0x61,0x11,0xB6,0x40,0x9D,0x17 ]);
 pub(crate) const IID_IBlackmagicRawPost3DLUT:                 GUID = GUID::new([/* 86052BC4-0231-48C6-B3C8-C771112AAD68 */ 0x86,0x05,0x2B,0xC4,0x02,0x31,0x48,0xC6,0xB3,0xC8,0xC7,0x71,0x11,0x2A,0xAD,0x68 ]);
 pub(crate) const IID_IBlackmagicRawProcessedImage:            GUID = GUID::new([/* D87A0F72-A883-42BB-8488-0089411C5035 */ 0xD8,0x7A,0x0F,0x72,0xA8,0x83,0x42,0xBB,0x84,0x88,0x00,0x89,0x41,0x1C,0x50,0x35 ]);
@@ -39,10 +39,13 @@ pub(crate) const IID_IBlackmagicRawFrameMultiVideo:           GUID = GUID::new([
 pub(crate) const IID_IBlackmagicRawManualDecoderFlow1:        GUID = GUID::new([/* 278815A6-A3C1-47C7-A0A6-6754DEAE5E7A */ 0x27,0x88,0x15,0xA6,0xA3,0xC1,0x47,0xC7,0xA0,0xA6,0x67,0x54,0xDE,0xAE,0x5E,0x7A ]);
 pub(crate) const IID_IBlackmagicRawManualDecoderFlow2:        GUID = GUID::new([/* DBEC4C39-B4C2-4A65-AA8C-2B3C7F4777E3 */ 0xDB,0xEC,0x4C,0x39,0xB4,0xC2,0x4A,0x65,0xAA,0x8C,0x2B,0x3C,0x7F,0x47,0x77,0xE3 ]);
 pub(crate) const IID_IBlackmagicRawClip:                      GUID = GUID::new([/* A2910203-787B-4BF2-A374-B1A459E2D351 */ 0xA2,0x91,0x02,0x03,0x78,0x7B,0x4B,0xF2,0xA3,0x74,0xB1,0xA4,0x59,0xE2,0xD3,0x51 ]);
-pub(crate) const IID_IBlackmagicRawClipEx:                    GUID = GUID::new([/* D260C7D0-93BD-4D68-B600-93B4CAB7F870 */ 0xD2,0x60,0xC7,0xD0,0x93,0xBD,0x4D,0x68,0xB6,0x00,0x93,0xB4,0xCA,0xB7,0xF8,0x70 ]);
-pub(crate) const IID_IBlackmagicRawClipMultiVideo:            GUID = GUID::new([/* C699E3E2-3268-4E08-8037-D5C4A2C5CE52 */ 0xC6,0x99,0xE3,0xE2,0x32,0x68,0x4E,0x08,0x80,0x37,0xD5,0xC4,0xA2,0xC5,0xCE,0x52 ]);
+pub(crate) const IID_IBlackmagicRawClipEx:                    GUID = GUID::new([/* 7DB60B13-6BB2-49DE-9A24-AA14A9F3CA6B */ 0x7D,0xB6,0x0B,0x13,0x6B,0xB2,0x49,0xDE,0x9A,0x24,0xAA,0x14,0xA9,0xF3,0xCA,0x6B ]);
+pub(crate) const IID_IBlackmagicRawClipMultiVideo:            GUID = GUID::new([/* B868316D-18E6-4792-ACF4-D7F25CB5CBB6 */ 0xB8,0x68,0x31,0x6D,0x18,0xE6,0x47,0x92,0xAC,0xF4,0xD7,0xF2,0x5C,0xB5,0xCB,0xB6 ]);
 pub(crate) const IID_IBlackmagicRawClipImmersiveVideo:        GUID = GUID::new([/* 47D287A7-9148-4659-BFCF-C767A089A200 */ 0x47,0xD2,0x87,0xA7,0x91,0x48,0x46,0x59,0xBF,0xCF,0xC7,0x67,0xA0,0x89,0xA2,0x00 ]);
 pub(crate) const IID_IBlackmagicRawClipResolutions:           GUID = GUID::new([/* C63C290F-525B-4EBE-AB56-87B010CACE19 */ 0xC6,0x3C,0x29,0x0F,0x52,0x5B,0x4E,0xBE,0xAB,0x56,0x87,0xB0,0x10,0xCA,0xCE,0x19 ]);
+pub(crate) const IID_IBlackmagicRawFilesystem:                GUID = GUID::new([/* 48640A3F-DC26-4CF9-B540-1CD8087986DD */ 0x48,0x64,0x0A,0x3F,0xDC,0x26,0x4C,0xF9,0xB5,0x40,0x1C,0xD8,0x08,0x79,0x86,0xDD ]);
+pub(crate) const IID_IBlackmagicRawFile:                      GUID = GUID::new([/* 9D0B46AB-C9DC-4BFB-8DDF-5E5A8F19BEFC */ 0x9D,0x0B,0x46,0xAB,0xC9,0xDC,0x4B,0xFB,0x8D,0xDF,0x5E,0x5A,0x8F,0x19,0xBE,0xFC ]);
+pub(crate) const IID_IBlackmagicRawAudioBuffer:               GUID = GUID::new([/* 6FCA661F-35AA-469A-AFCE-3012B40760CC */ 0x6F,0xCA,0x66,0x1F,0x35,0xAA,0x46,0x9A,0xAF,0xCE,0x30,0x12,0xB4,0x07,0x60,0xCC ]);
 
 // Enums
 
@@ -269,7 +272,13 @@ pub enum BlackmagicRawClipProcessingAttribute {
     /// Float array of sidecar 3D LUT data (float array, size*size*size*3 elements)
     SidecarPost3DLUTData     = /* 'scld' */ 0x73636C64,
     /// Enable gamut compression (u16, 0=disabled, 1=enabled)
-    GamutCompressionEnable   = /* 'gace' */ 0x67616365
+    GamutCompressionEnable   = /* 'gace' */ 0x67616365,
+    /// Enable lens shading correction on clips that carry lens correction data (u16, 0=disabled, 1=enabled)
+    LensShadingEnable        = /* 'shde' */ 0x73686465,
+    /// Enable lens distortion correction on clips that carry lens correction data (u16, 0=disabled, 1=enabled)
+    LensDistortionCorrectionEnable = /* 'dice' */ 0x64696365,
+    /// Enable lens chromatic aberration correction on clips that carry lens correction data (u16, 0=disabled, 1=enabled)
+    LensChromaticAberrationCorrectionEnable = /* 'cace' */ 0x63616365
 }
 
 /// Frame processing attributes that may be stored as metadata.
@@ -446,9 +455,13 @@ pub enum BlackmagicRawImmersiveVideoTrack {
 braw_interface! {
     BlackmagicRaw {
         /// Opens a clip from the specified file path
-        fn OpenClip(fileName: *const c_void, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
+        fn OpenClip(filePath: *const c_void, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
         /// Opens a clip with specified geometry properties, overriding metadata
-        fn OpenClipWithGeometry(fileName: *const c_void, geometry: *mut IBlackmagicRawClipGeometry, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
+        fn OpenClipWithGeometry(filePath: *const c_void, geometry: *mut IBlackmagicRawClipGeometry, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
+        /// Opens a clip read through the provided file interface
+        fn OpenClipFromFile(brawFile: *mut IBlackmagicRawFile, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
+        /// Opens a clip read through the provided file interface, with specified geometry properties overriding metadata
+        fn OpenClipFromFileWithGeometry(brawFile: *mut IBlackmagicRawFile, geometry: *mut IBlackmagicRawClipGeometry, out_clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
         /// Registers a callback with the codec object for receiving processing notifications
         fn SetCallback(cb: *mut IBlackmagicRawCallback) -> HRESULT;
         /// Asynchronously prepares the current pipeline for decoding to reduce first-frame latency
@@ -571,6 +584,8 @@ braw_interface! {
         fn GetIndex(deviceIndex: *mut u32) -> HRESULT;
         /// Gets the name of the device
         fn GetName(deviceName: *mut *mut c_void) -> HRESULT;
+        /// Gets an identifier that is unique to the device
+        fn GetUniqueIdentifier(uniqueIdentifier: *mut u64) -> HRESULT;
         /// Gets the API interoperability of the device
         fn GetInterop(interop: *mut BlackmagicRawInterop) -> HRESULT;
         /// Gets the pipeline configuration information associated with the device
@@ -595,6 +610,7 @@ braw_interface! {
         scalar GetInstructionSet     => fn instruction_set(&Self) -> BlackmagicRawInstructionSet; /// Gets the CPU instruction set
         scalar GetIndex              => fn index(&Self) -> u32; /// Gets the device index
         scalar GetName               => fn name(&Self) -> String; /// Gets the device name
+        scalar GetUniqueIdentifier   => fn unique_identifier(&Self) -> u64; /// Gets an identifier unique to the device
         scalar GetInterop            => fn interop(&Self) -> BlackmagicRawInterop; /// Gets the API interoperability
         scalar GetPipelineName       => fn pipeline_name(&Self) -> String; /// Gets the pipeline name
         scalar2 GetMaximumTextureSize => fn maximum_texture_size(&Self) -> (u32, u32); /// Returns the maximum texture size (width, height)
@@ -801,6 +817,14 @@ braw_interface! {
         fn GetISOList(array: *mut u32, arrayElementCount: *mut u32, isReadOnly: *mut SdkBool) -> HRESULT;
         /// Get the active 3D LUT
         fn GetPost3DLUT(lut: *mut *mut IBlackmagicRawPost3DLUT) -> HRESULT;
+        /// Get the sidecar 3D LUT
+        fn GetSidecarPost3DLUT(lut: *mut *mut IBlackmagicRawPost3DLUT) -> HRESULT;
+        /// Set the sidecar 3D LUT (float array data, size*size*size*3 elements)
+        fn SetSidecarPost3DLUT(name: *const c_void, title: *const c_void, size: u16, data: *mut VARIANT) -> HRESULT;
+        /// Get the 3D LUT embedded in the clip
+        fn GetEmbeddedPost3DLUT(lut: *mut *mut IBlackmagicRawPost3DLUT) -> HRESULT;
+        /// Set the embedded 3D LUT (float array data, size*size*size*3 elements)
+        fn SetEmbeddedPost3DLUT(name: *const c_void, title: *const c_void, size: u16, data: *mut VARIANT) -> HRESULT;
     }
     /// Clip attributes used during processing.
     ///
@@ -808,8 +832,12 @@ braw_interface! {
     #[derive(Clone)]
     impl {
         struct GetPost3DLUT     => fn post_3d_lut(&Self) -> BlackmagicRawPost3DLUT; /// Get the active 3D LUT
+        struct GetSidecarPost3DLUT  => fn sidecar_post_3d_lut(&Self) -> BlackmagicRawPost3DLUT; /// Get the sidecar 3D LUT
+        struct GetEmbeddedPost3DLUT => fn embedded_post_3d_lut(&Self) -> BlackmagicRawPost3DLUT; /// Get the embedded 3D LUT
         scalar GetClipAttribute => fn attribute(&Self, attribute: BlackmagicRawClipProcessingAttribute) -> VariantValue; /// Get a clip attribute value
         void   SetClipAttribute => fn set_attribute(&Self, attribute: BlackmagicRawClipProcessingAttribute, value: VariantValue); /// Set a clip attribute value
+        void   SetSidecarPost3DLUT  => fn set_sidecar_post_3d_lut(&Self, name: String, title: String, size: u16, data: VariantValue); /// Set the sidecar 3D LUT (`data` is a float array of size*size*size*3 elements, RGB per LUT point), as `sidecar_post_3d_lut` and the `SidecarPost3DLUT*` attributes then report
+        void   SetEmbeddedPost3DLUT => fn set_embedded_post_3d_lut(&Self, name: String, title: String, size: u16, data: VariantValue); /// Set the embedded 3D LUT (`data` is a float array of size*size*size*3 elements, RGB per LUT point), as `embedded_post_3d_lut` and the `EmbeddedPost3DLUT*` attributes then report
         // custom impl GetClipAttributeRange
         // custom impl GetClipAttributeList
         // custom impl GetISOList
@@ -861,7 +889,9 @@ braw_interface! {
         /// Get size of resource in bytes
         fn GetResourceSizeBytes(sizeBytes: *mut u32) -> HRESULT;
         /// Write LUT as cube file
-        fn WriteCubeFile(fileName: *const c_void) -> HRESULT;
+        fn WriteCubeFile(filePath: *const c_void) -> HRESULT;
+        /// Write LUT as cube file through the provided file interface
+        fn WriteCubeToFile(cubeFile: *mut IBlackmagicRawFile) -> HRESULT;
     }
     /// 3D LUT object.
     ///
@@ -873,9 +903,10 @@ braw_interface! {
         scalar GetTitle         => fn title        (&Self) -> String; /// Get the LUT title
         scalar GetSize          => fn size         (&Self) -> u32; /// Get the LUT dimensions
         scalar GetResourceSizeBytes => fn resource_size_bytes(&Self) -> u32; /// Get resource size in bytes
-        void   WriteCubeFile    => fn write_cube_file(&Self, file_name: String); /// Export LUT as .cube file
+        void   WriteCubeFile    => fn write_cube_file(&Self, file_path: String); /// Export LUT as .cube file
         // custom impl GetResourceGPU
         // custom impl GetResourceCPU
+        // custom impl WriteCubeToFile
     }
 }
 // SAFETY: Tier 2 - read-only accessor; moving its COM handle between threads is sound (see the "Thread-safety" note above).
@@ -977,6 +1008,8 @@ braw_interface! {
     BlackmagicRawCallback {
         /// Called when a read has completed
         fn ReadComplete(job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) -> ();
+        /// Called when an audio read has completed
+        fn ReadAudioComplete(job: *mut IBlackmagicRawJob, result: HRESULT, audioBuffer: *mut IBlackmagicRawAudioBuffer) -> ();
         /// Called when a decode has completed (manual decoders only)
         fn DecodeComplete(job: *mut IBlackmagicRawJob, result: HRESULT) -> ();
         /// Called when a process has completed
@@ -1307,8 +1340,12 @@ braw_interface! {
         fn ReloadSidecarFile() -> HRESULT;
         /// Create a job to read a frame
         fn CreateJobReadFrame(frameIndex: u64, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        /// Create a job to read audio samples. When completed we will receive a ReadAudioComplete() callback
+        fn CreateJobReadAudio(sampleIndex: u64, maxSampleCount: u64, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
         /// Create a job to trim/export part of the clip with the sidecar file baked in
-        fn CreateJobTrim(fileName: *const c_void, frameIndex: u64, frameCount: u64, clipProcessingAttributes: *mut IBlackmagicRawClipProcessingAttributes, frameProcessingAttributes: *mut IBlackmagicRawFrameProcessingAttributes, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        fn CreateJobTrim(filePath: *const c_void, frameIndex: u64, frameCount: u64, clipProcessingAttributes: *mut IBlackmagicRawClipProcessingAttributes, frameProcessingAttributes: *mut IBlackmagicRawFrameProcessingAttributes, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        /// Create a job to trim/export part of the clip with the sidecar file baked in, written through the provided file interface
+        fn CreateJobTrimToFile(destinationFile: *mut IBlackmagicRawFile, frameIndex: u64, frameCount: u64, clipProcessingAttributes: *mut IBlackmagicRawClipProcessingAttributes, frameProcessingAttributes: *mut IBlackmagicRawFrameProcessingAttributes, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
         /// Clone the clip with different geometry settings
         fn CloneWithGeometry(geometry: *mut IBlackmagicRawClipGeometry, clip: *mut *mut IBlackmagicRawClip) -> HRESULT;
     }
@@ -1335,7 +1372,9 @@ braw_interface! {
         void ReloadSidecarFile               => fn reload_sidecar_file(&Self); /// Reload sidecar from disk
         // custom impl GetMetadataIterator
         // custom impl CreateJobReadFrame
+        // custom impl CreateJobReadAudio
         // custom impl CreateJobTrim
+        // custom impl CreateJobTrimToFile
         interface fn ex(&self) -> BlackmagicRawClipEx; /// Get extended clip interface
         interface fn processing_attributes(&self) -> BlackmagicRawClipProcessingAttributes; /// Get clip processing attributes
         interface fn audio(&self) -> BlackmagicRawClipAudio; /// Get audio interface
@@ -1356,8 +1395,16 @@ braw_interface! {
         fn GetBitStreamSizeBytes(frameIndex: u64, bitStreamSizeBytes: *mut u32) -> HRESULT;
         /// Create a job to read the frame's bitstream into memory with custom buffer
         fn CreateJobReadFrame(frameIndex: u64, bitStream: *mut c_void, bitStreamSizeBytes: u32, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        /// Create a job to trim/export every `frameStep`th frame of part of the clip with the sidecar file baked in, played back at `frameRate`
+        fn CreateJobTrim(filePath: *const c_void, frameIndex: u64, frameCount: u64, frameStep: u32, frameRate: f32, clipProcessingAttributes: *mut IBlackmagicRawClipProcessingAttributes, frameProcessingAttributes: *mut IBlackmagicRawFrameProcessingAttributes, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        /// As `CreateJobTrim`, written through the provided file interface
+        fn CreateJobTrimToFile(destinationFile: *mut IBlackmagicRawFile, frameIndex: u64, frameCount: u64, frameStep: u32, frameRate: f32, clipProcessingAttributes: *mut IBlackmagicRawClipProcessingAttributes, frameProcessingAttributes: *mut IBlackmagicRawFrameProcessingAttributes, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
         /// Queries the timecode info for the clip
         fn QueryTimecodeInfo(baseFrameIndex: *mut u32, isDropFrameTimecode: *mut SdkBool) -> HRESULT;
+        /// Returns the size, file offset and file index of the frame's image data
+        fn GetFrameImageOffsetAndSize(frameIndex: u64, imageSizeBytes: *mut u32, imageOffsetBytes: *mut u64, fileIndex: *mut u32) -> HRESULT;
+        /// Returns the size, file offset, sample count and first sample index of the audio chunk holding the provided sample
+        fn GetAudioChunkInfo(sampleIndex: u64, audioChunkSizeBytesOut: *mut u32, audioChunkOffsetBytesOut: *mut u64, audioChunkSampleCountOut: *mut u64, audioChunkStartSampleIndexOut: *mut u64) -> HRESULT;
     }
     /// Extended use of IBlackmagicRawClip, to pass custom bitstream.
     ///
@@ -1367,7 +1414,11 @@ braw_interface! {
         scalar GetMaxBitStreamSizeBytes => fn max_bit_stream_size_bytes(&Self) -> u32; /// Get maximum bitstream size
         scalar GetBitStreamSizeBytes    => fn bit_stream_size_bytes(&Self, frame_index: u64) -> u32; /// Get bitstream size for frame
         scalar2 QueryTimecodeInfo       => fn timecode_info(&Self) -> (u32, bool); /// Get timecode info (base frame, is drop frame)
+        scalar3 GetFrameImageOffsetAndSize => fn frame_image_offset_and_size(&Self, frame_index: u64) -> (u32, u64, u32); /// Get the frame's image data location (size in bytes, file offset in bytes, file index)
         // custom impl CreateJobReadFrame
+        // custom impl CreateJobTrim
+        // custom impl CreateJobTrimToFile
+        // custom impl GetAudioChunkInfo
     }
 }
 // SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
@@ -1387,6 +1438,8 @@ braw_interface! {
         fn GetBitStreamSizeBytes(videoTrackIndex: u32, frameIndex: u64, bitStreamSizeBytes: *mut u32) -> HRESULT;
         /// Create a job to read a frame with custom buffer
         fn CreateJobReadFrameEx(videoTrackIndex: u32, frameIndex: u64, bitStream : *mut c_void, bitStreamSizeBytes: u32, job: *mut *mut IBlackmagicRawJob) -> HRESULT;
+        /// Returns the size, file offset and file index of the frame's image data in the specified track
+        fn GetFrameImageOffsetAndSize(videoTrackIndex: u32, frameIndex: u64, imageSizeBytes: *mut u32, imageOffsetBytes: *mut u64, fileIndex: *mut u32) -> HRESULT;
     }
     /// Extended use of IBlackmagicRawClip, to support multi video track video clips.
     ///
@@ -1399,6 +1452,7 @@ braw_interface! {
         // custom impl CreateJobReadFrame
         // custom impl CreateJobReadFrameEx
         scalar GetBitStreamSizeBytes => fn bit_stream_size_bytes(&Self, video_track_index: u32, frame_index: u64) -> u32; /// Get bitstream size
+        scalar3 GetFrameImageOffsetAndSize => fn frame_image_offset_and_size(&Self, video_track_index: u32, frame_index: u64) -> (u32, u64, u32); /// Get the frame's image data location (size in bytes, file offset in bytes, file index)
     }
 }
 // SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
@@ -1467,3 +1521,84 @@ braw_interface! {
 unsafe impl Send for BlackmagicRawClipResolutions {}
 // SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
 unsafe impl Sync for BlackmagicRawClipResolutions {}
+
+braw_interface! {
+    BlackmagicRawAudioBuffer {
+        /// Get format the audio was recorded in
+        fn GetAudioFormat(format: *mut BlackmagicRawAudioFormat) -> HRESULT;
+        /// Get the audio bit depth
+        fn GetAudioBitDepth(bitDepth: *mut u32) -> HRESULT;
+        /// Get the audio channel count
+        fn GetAudioChannelCount(channelCount: *mut u32) -> HRESULT;
+        /// Get the audio sample rate
+        fn GetAudioSampleRate(sampleRate: *mut u32) -> HRESULT;
+        /// Get the audio sample count (see `BlackmagicRawAudioBuffer::sample_count`)
+        fn GetAudioSampleCount(sampleCount: *mut u64) -> HRESULT;
+        /// Get a pointer to the buffer's interleaved samples and their size in bytes
+        fn GetAudioSamples(buffer: *mut *mut c_void, bufferSizeBytes: *mut u32) -> HRESULT;
+    }
+    /// Audio samples produced by a read-audio job.
+    ///
+    /// This object is created by the API and provided via a ReadAudioComplete() callback.
+    #[derive(Clone)]
+    impl {
+        scalar GetAudioFormat       => fn format       (&Self) -> BlackmagicRawAudioFormat; /// Get audio format
+        scalar GetAudioBitDepth     => fn bit_depth    (&Self) -> u32; /// Get bit depth
+        scalar GetAudioChannelCount => fn channel_count(&Self) -> u32; /// Get channel count
+        scalar GetAudioSampleRate   => fn sample_rate  (&Self) -> u32; /// Get sample rate
+        scalar GetAudioSampleCount  => fn sample_count (&Self) -> u64; /// The SDK's `GetAudioSampleCount`. Documented as the per-channel sample count, but SDK 6.0 reports the buffer's size in bytes (`samples().len()`); derive sample frames from `samples()` instead
+        // custom impl GetAudioSamples
+    }
+}
+// SAFETY: Tier 2 - read-only accessor over already-read samples; moving its COM handle between threads is sound (see the "Thread-safety" note above).
+unsafe impl Send for BlackmagicRawAudioBuffer {}
+// SAFETY: Tier 2 - sharing `&T` is sound: the `&self` surface is immutable getters, i.e. concurrent reads (see the "Thread-safety" note above).
+unsafe impl Sync for BlackmagicRawAudioBuffer {}
+
+/// One scatter/gather buffer of an [`IBlackmagicRawFile`] `ReadV` / `WriteV` call.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BmdIoVec {
+    pub iov_base: *mut c_void,
+    pub iov_len: u64,
+}
+
+braw_interface! {
+    /// Filesystem operations for files beyond locally mounted volumes.
+    ///
+    /// Implemented by the application (see [`BrawFilesystem`]); the SDK calls it to
+    /// open or create the files that accompany a clip, such as its `.sidecar`.
+    BlackmagicRawFilesystem {
+        /// Open a file that is associated with the provided file
+        fn OpenCompanionFile(parentFile: *mut IBlackmagicRawFile, fileName: *const c_void, fileOut: *mut *mut IBlackmagicRawFile) -> HRESULT;
+        /// Create a file that is associated with the provided file
+        fn CreateCompanionFile(parentFile: *mut IBlackmagicRawFile, fileName: *const c_void, replaceExisting: SdkBool, fileOut: *mut *mut IBlackmagicRawFile) -> HRESULT;
+    }
+}
+
+braw_interface! {
+    /// File operations for files beyond locally mounted volumes.
+    ///
+    /// Implemented by the application (see [`BrawFile`]); the SDK reads clips and
+    /// writes sidecars, trims and cube files through it.
+    BlackmagicRawFile {
+        /// Returns the filesystem on which this file resides
+        fn GetFilesystem(filesystemOut: *mut *mut IBlackmagicRawFilesystem) -> HRESULT;
+        /// Returns the name of this file
+        fn GetFileName(fileName: *mut *mut c_void) -> HRESULT;
+        /// Sets the length of the file in bytes
+        fn SetFileLength(fileLength: u64) -> HRESULT;
+        /// Gets the length of the file in bytes
+        fn GetFileLength(fileLength: *mut u64) -> HRESULT;
+        /// Reads into the provided buffers, starting at the provided file offset
+        fn ReadV(buffers: *mut BmdIoVec, bufferCount: u32, fileOffset: u64, bytesRead: *mut u64) -> HRESULT;
+        /// Writes out the provided buffers, starting at the provided file offset
+        fn WriteV(buffers: *mut BmdIoVec, bufferCount: u32, fileOffset: u64, bytesWritten: *mut u64) -> HRESULT;
+        /// Returns the byte alignment for best performance when reading or writing to this file
+        fn GetPreferredIoAlignment(alignment: *mut u32) -> HRESULT;
+        /// Ensures any data written to the file is flushed from any write cache
+        fn FlushWrites() -> HRESULT;
+        /// Called once on every file the SDK writes, when it has been completely written
+        fn CommitFile() -> HRESULT;
+    }
+}

@@ -5,6 +5,7 @@ use super::*;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use std::ops::{ Deref, DerefMut };
+use std::sync::atomic::{ fence, AtomicU32, Ordering };
 
 /// The SDK's COM boolean out-parameter width.
 ///
@@ -64,12 +65,184 @@ pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: *
 #[cfg(not(target_os = "windows"))]
 pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: GUID, ppv: *mut *mut c_void) -> HRESULT;
 
+/// The COM `ULONG` that `AddRef` / `Release` return: 32-bit on Windows and in
+/// CoreFoundation's `CFPlugInCOM.h` (Apple), but `unsigned long` — 64-bit on
+/// LP64 — in the SDK's `LinuxCOM.h`.
+#[cfg(any(target_os = "windows", target_vendor = "apple"))]
+pub type ComUlong = u32;
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
+pub type ComUlong = core::ffi::c_ulong;
+
 #[repr(C)]
 #[allow(non_snake_case)]
 pub struct IUnknownVTbl {
     pub QueryInterface: QueryInterfaceFn,
-    pub AddRef: unsafe extern "system" fn(this: *mut c_void) -> u32,
-    pub Release: unsafe extern "system" fn(this: *mut c_void) -> u32,
+    pub AddRef: unsafe extern "system" fn(this: *mut c_void) -> ComUlong,
+    pub Release: unsafe extern "system" fn(this: *mut c_void) -> ComUlong,
+}
+
+/// The `riid` argument of a `QueryInterface` implemented in Rust (see [`QueryInterfaceFn`]).
+#[cfg(target_os = "windows")]
+pub(crate) type QueryInterfaceRiid = *const GUID;
+#[cfg(not(target_os = "windows"))]
+pub(crate) type QueryInterfaceRiid = GUID;
+
+#[inline]
+pub(crate) unsafe fn guid_from_riid(riid: QueryInterfaceRiid) -> GUID {
+    #[cfg(target_os = "windows")]
+    unsafe { *riid }
+    #[cfg(not(target_os = "windows"))]
+    { riid }
+}
+
+pub(crate) const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
+
+/// Panic firewall for the `extern "system"` COM methods implemented in Rust. A
+/// Rust panic must never unwind across the C++ ABI boundary that invoked us:
+/// catch it, log it, and return an ABI-valid `fallback` instead of unwinding.
+#[inline]
+pub(crate) fn ffi_guard<R>(what: impl std::fmt::Display, fallback: R, f: impl FnOnce() -> R) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => {
+            log::error!("panic in BRAW COM method `{what}` swallowed at the FFI boundary");
+            fallback
+        }
+    }
+}
+
+/// The Rust state of a COM object implemented in Rust — a callback, a file, a
+/// filesystem — and the one interface it implements besides `IUnknown`.
+///
+/// # Safety
+/// [`VTABLE`](Self::VTABLE) must begin with [`ComObject::<Self>::IUNKNOWN`], and
+/// each of its other methods must expect `this` to point to a `ComObject<Self>`.
+pub(crate) unsafe trait ComClass: Sized + 'static {
+    /// The interface type the SDK sees.
+    type Interface;
+    /// The interface's vtable type.
+    type VTable: 'static;
+    /// The interface's IID.
+    const IID: GUID;
+    /// The interface's name, for diagnostics.
+    const NAME: &'static str;
+    /// The vtable every object of this class carries. Point it at a `static` for
+    /// [`ComObject::downcast`] to recognise the objects.
+    const VTABLE: &'static Self::VTable;
+}
+
+/// A reference count no real program reaches: past it the count is being leaked
+/// in a loop, and letting it wrap would free a referenced object (as `Arc` guards).
+const MAX_REFCOUNT: u32 = u32::MAX / 2;
+
+/// A COM object implemented in Rust, laid out as the SDK expects: the vtable
+/// pointer, then the reference count, then the Rust state. Its `IUnknown` methods
+/// are shared by every class: the vtable starts with [`IUNKNOWN`](Self::IUNKNOWN).
+#[repr(C)]
+pub(crate) struct ComObject<T: ComClass> {
+    vtbl: &'static T::VTable,
+    refcnt: AtomicU32,
+    pub(crate) state: T,
+}
+
+impl<T: ComClass> ComObject<T> {
+    pub(crate) const IUNKNOWN: IUnknownVTbl = IUnknownVTbl {
+        QueryInterface: Self::query_interface,
+        AddRef: Self::add_ref,
+        Release: Self::release,
+    };
+
+    /// A new object holding one reference, owned by the returned pointer.
+    pub(crate) fn create(state: T) -> ComPtr<T::Interface> {
+        let obj = Box::new(Self { vtbl: T::VTABLE, refcnt: AtomicU32::new(1), state });
+        // SAFETY: the object begins with its interface's vtable pointer (`repr(C)`),
+        // and its one reference passes to the `ComPtr`.
+        unsafe { ComPtr::from_nonnull(NonNull::from(Box::leak(obj)).cast()) }
+    }
+
+    /// The object `this` points to.
+    ///
+    /// # Safety
+    /// `this` must point to a live `ComObject<T>` that outlives `'a` — as it does for
+    /// the duration of a method the SDK calls through this class's vtable.
+    unsafe fn from_this<'a>(this: *mut c_void) -> &'a Self {
+        unsafe { &*(this as *const Self) }
+    }
+
+    /// The state of the object `this` points to.
+    ///
+    /// # Safety
+    /// As for [`from_this`](Self::from_this).
+    pub(crate) unsafe fn state<'a>(this: *mut c_void) -> &'a T {
+        unsafe { &Self::from_this(this).state }
+    }
+
+    /// A new reference to the object `this` points to.
+    ///
+    /// # Safety
+    /// As for [`from_this`](Self::from_this).
+    pub(crate) unsafe fn new_ref(this: *mut c_void) -> ComPtr<T::Interface> {
+        unsafe {
+            Self::add_ref(this);
+            ComPtr::from_nonnull(NonNull::new_unchecked(this).cast())
+        }
+    }
+
+    /// The state of the object `ptr` points to, if it is one of this class's —
+    /// recognised by its vtable, which [`ComClass::VTABLE`] must place at a single
+    /// address (a `static`).
+    ///
+    /// # Safety
+    /// `ptr` must be null or point to a live COM object that outlives `'a`.
+    pub(crate) unsafe fn downcast<'a>(ptr: *mut T::Interface) -> Option<&'a T> {
+        // Every COM object begins with its vtable pointer.
+        if ptr.is_null() || !std::ptr::eq(unsafe { *(ptr as *const *const T::VTable) }, T::VTABLE) {
+            return None;
+        }
+        Some(unsafe { Self::state(ptr.cast()) })
+    }
+
+    unsafe extern "system" fn query_interface(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
+        ffi_guard(format_args!("{}::QueryInterface", T::NAME), E_UNEXPECTED, move || unsafe {
+            if ppv.is_null() { return E_POINTER; }
+            let iid = guid_from_riid(riid);
+            if iid == IID_IUNKNOWN || iid == T::IID {
+                Self::add_ref(this);
+                *ppv = this;
+                S_OK
+            } else {
+                *ppv = std::ptr::null_mut();
+                E_NOINTERFACE
+            }
+        })
+    }
+
+    unsafe extern "system" fn add_ref(this: *mut c_void) -> ComUlong {
+        let prev = unsafe { Self::from_this(this) }.refcnt.fetch_add(1, Ordering::Relaxed);
+        if prev > MAX_REFCOUNT {
+            std::process::abort();
+        }
+        (prev + 1) as ComUlong
+    }
+
+    unsafe extern "system" fn release(this: *mut c_void) -> ComUlong {
+        // Freeing the object runs the state's `Drop` — user code — so keep a panic
+        // inside Rust.
+        ffi_guard(format_args!("{}::Release", T::NAME), 0, move || {
+            // The borrow ends with this statement: nothing may point into the object
+            // once it is freed.
+            let prev = unsafe { Self::from_this(this) }.refcnt.fetch_sub(1, Ordering::Release);
+            if prev != 1 {
+                return (prev - 1) as ComUlong;
+            }
+            // Order every other reference's last use before the free, as `Arc` does.
+            fence(Ordering::Acquire);
+            // SAFETY: that was the last reference, so nothing else can reach the
+            // object, which `create` allocated as a `Box`.
+            drop(unsafe { Box::from_raw(this as *mut Self) });
+            0
+        })
+    }
 }
 
 #[macro_export]
@@ -80,7 +253,7 @@ macro_rules! braw_interface {
         $name:ident {
             $(
                 $(#[$fn_meta:meta])*
-                fn $m:ident ( $($argn:ident : $argt:ty),* ) -> $ret:ty ;
+                fn $m:ident ( $($argn:ident : $argt:ty),* ) -> $ret:tt ;
             )*
         }
         $(
@@ -228,8 +401,11 @@ macro_rules! braw_interface {
             )?
         }
     };
-    (@ret $hr:ident $ret:ty) => { S_OK };
+    // The status a method's return value carries. `$ret` is matched as a `tt`: a
+    // forwarded `ty` fragment is opaque and would never match `HRESULT`, silently
+    // discarding every method's failure.
     (@ret $hr:ident HRESULT) => { $hr };
+    (@ret $hr:ident $ret:tt) => { S_OK };
 
     (@iarg String) => { &str };
     (@iarg $t:ty) => { $t };
@@ -247,7 +423,7 @@ macro_rules! braw_interface {
     // that width so the SDK's store can't overrun the stack (see `SdkBool`).
     (@iargpassret bool) => { $crate::SdkBool };
     (@iargpassret $t:ty) => { $t };
-    (@iargpassret2 $self:ident; String,$o:expr) => { BrawString($o as *mut _).to_string() };
+    (@iargpassret2 $self:ident; String,$o:expr) => { unsafe { $crate::take_sdk_string($o) } };
     (@iargpassret2 $self:ident; VariantValue,$o:expr) => { $self.factory.lib.variant_to_rust($o) };
     (@iargpassret2 $self:ident; bool,$o:expr) => { $crate::sdk_bool($o) };
     (@iargpassret2 $self:ident; $t:ty,$o:expr) => { $o };
@@ -269,6 +445,13 @@ pub struct ComPtr<T> { ptr: NonNull<T> }
 impl<T> ComPtr<T> {
     pub fn new(nn: *mut T) -> Result<Self, BrawError> { Ok(Self { ptr: NonNull::new(nn).ok_or(BrawError::NullValue)? }) }
     pub fn as_raw(&self) -> *mut T { self.ptr.as_ptr() }
+    /// Take ownership of one reference to the COM object at `ptr`.
+    ///
+    /// # Safety
+    /// `ptr` must be a live COM interface whose reference the caller transfers.
+    pub(crate) unsafe fn from_nonnull(ptr: NonNull<T>) -> Self { Self { ptr } }
+    /// Give up the reference without releasing it — to hand it to the SDK.
+    pub(crate) fn into_raw(self) -> *mut T { std::mem::ManuallyDrop::new(self).as_raw() }
 }
 impl<T> Clone for ComPtr<T> {
     fn clone(&self) -> Self {
@@ -343,9 +526,15 @@ unsafe impl Send for ComPtrRefGuard {}
 pub struct DropOrderVec<T: Clone>(pub Vec<T>);
 impl<T: Clone> DropOrderVec<T> {
     pub fn clone_and_add(&self, v: T) -> Self {
-        let mut guards = self.clone();
-        guards.0.push(v);
-        guards
+        self.clone_and_extend([v])
+    }
+    /// A copy with `extra` appended, cloning the existing guards once.
+    pub fn clone_and_extend(&self, extra: impl IntoIterator<Item = T>) -> Self {
+        let extra = extra.into_iter();
+        let mut guards = Vec::with_capacity(self.0.len() + extra.size_hint().0);
+        guards.extend(self.0.iter().cloned());
+        guards.extend(extra);
+        Self(guards)
     }
 }
 impl<T: Clone> Drop for DropOrderVec<T> {
@@ -357,5 +546,19 @@ impl<T: Clone> Drop for DropOrderVec<T> {
 impl<T: Clone> From<Vec<T>> for DropOrderVec<T> {
     fn from(arr: Vec<T>) -> Self {
         DropOrderVec(arr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DropOrderVec;
+
+    #[test]
+    fn clone_and_extend_appends_in_order_and_leaves_the_original() {
+        let base = DropOrderVec(vec![1, 2]);
+        let more = base.clone_and_extend([3, 4]);
+        assert_eq!(more.0, [1, 2, 3, 4]);
+        assert_eq!(base.clone_and_add(5).0, [1, 2, 5]);
+        assert_eq!(base.0, [1, 2]);
     }
 }

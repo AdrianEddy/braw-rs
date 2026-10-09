@@ -2,13 +2,13 @@
 // Copyright © 2025 Adrian <adrian.eddy at gmail>
 
 use super::*;
-use std::sync::atomic::{ AtomicU32, Ordering };
-use std::panic::{ catch_unwind, AssertUnwindSafe };
 use core::ffi::c_void;
+use std::marker::PhantomData;
 
 #[allow(unused_variables)]
 pub trait BrawCallback: Send + 'static {
     fn read_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) { }
+    fn read_audio_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, audio_buffer: *mut IBlackmagicRawAudioBuffer) { }
     fn decode_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) { }
     fn process_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) { }
     fn trim_progress(&self, job: *mut IBlackmagicRawJob, progress: f32) { }
@@ -18,121 +18,20 @@ pub trait BrawCallback: Send + 'static {
     fn prepare_pipeline_complete(&self, user_data: *mut c_void, result: HRESULT) { }
 }
 
-#[repr(C)]
-pub(crate) struct CallbackBox<T: BrawCallback> {
-    vtbl: *const IBlackmagicRawCallbackVTbl,
-    refcnt: AtomicU32,
-    pub state: T,
-}
+/// The `IBlackmagicRawCallback` the SDK calls, forwarding to a [`BrawCallback`].
+pub(crate) struct Callback<T: BrawCallback>(T);
 
-#[cfg(target_os = "windows")]
-type QueryInterfaceRiid = *const GUID;
-#[cfg(not(target_os = "windows"))]
-type QueryInterfaceRiid = GUID;
-#[inline]
-fn guid_from_riid(riid: QueryInterfaceRiid) -> GUID {
-    #[cfg(target_os = "windows")]
-    unsafe { *riid }
-    #[cfg(not(target_os = "windows"))]
-    { riid }
-}
-
-// Helpers to get the typed self back from `this`
-unsafe fn cb_from_this<T: BrawCallback>(this: *mut c_void) -> *mut CallbackBox<T> {
-    this as *mut CallbackBox<T>
-}
-
-/// Panic firewall for the `extern "system"` COM callbacks. A Rust panic must
-/// never unwind across the C++ ABI boundary that invoked us (plan R15): catch
-/// it, log it, and return an ABI-valid `fallback` sentinel instead of unwinding.
-#[inline]
-fn ffi_guard<R>(what: &str, fallback: R, f: impl FnOnce() -> R) -> R {
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(v) => v,
-        Err(_) => {
-            log::error!("panic in BRAW callback `{what}` swallowed at the FFI boundary (R15)");
-            fallback
-        }
-    }
-}
-
-// IUnknown — signatures must match platform
-unsafe extern "system" fn cb_qi<T: BrawCallback>(this: *mut c_void, riid: QueryInterfaceRiid, ppv: *mut *mut c_void) -> HRESULT {
-    // E_UNEXPECTED (0x8000FFFF) is the ABI-valid failure sentinel if the body panics.
-    ffi_guard("QueryInterface", 0x8000FFFFu32 as i32, move || {
-        const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
-        unsafe {
-            if ppv.is_null() { return E_POINTER; }
-            *ppv = std::ptr::null_mut();
-
-            // Accept IUnknown and IID_IBlackmagicRawCallback
-            let want_iid = guid_from_riid(riid);
-            if want_iid == IID_IUNKNOWN || want_iid == IID_IBlackmagicRawCallback {
-                *ppv = this;
-                cb_addref::<T>(this);
-                return S_OK;
-            }
-        }
-        0x80004002u32 as i32 // E_NOINTERFACE
-    })
-}
-
-unsafe extern "system" fn cb_addref<T: BrawCallback>(this: *mut c_void) -> u32 {
-    ffi_guard("AddRef", 0, move || {
-        let me = unsafe { &*cb_from_this::<T>(this) };
-        me.refcnt.fetch_add(1, Ordering::Relaxed) + 1
-    })
-}
-
-unsafe extern "system" fn cb_release<T: BrawCallback>(this: *mut c_void) -> u32 {
-    // Dropping the box runs the user callback state's `Drop`, which may panic —
-    // the firewall keeps that from unwinding across the FFI boundary.
-    ffi_guard("Release", 0, move || unsafe {
-        let me = &*cb_from_this::<T>(this);
-        let prev = me.refcnt.fetch_sub(1, Ordering::Release);
-        if prev == 1 {
-            std::sync::atomic::fence(Ordering::Acquire);
-            drop(Box::from_raw(cb_from_this::<T>(this))); // free
-            0
-        } else {
-            prev - 1
-        }
-    })
-}
-
-unsafe extern "system" fn cb_read_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
-    ffi_guard("ReadComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.read_complete(job, result, frame); });
-}
-unsafe extern "system" fn cb_decode_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
-    ffi_guard("DecodeComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.decode_complete(job, result); });
-}
-unsafe extern "system" fn cb_process_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
-    ffi_guard("ProcessComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.process_complete(job, result, processed_image); });
-}
-unsafe extern "system" fn cb_trim_progress<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, progress: f32) {
-    ffi_guard("TrimProgress", (), move || unsafe { (*cb_from_this::<T>(this)).state.trim_progress(job, progress); });
-}
-unsafe extern "system" fn cb_trim_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
-    ffi_guard("TrimComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.trim_complete(job, result); });
-}
-unsafe extern "system" fn cb_sidecar_metadata_parse_warning<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
-    ffi_guard("SidecarMetadataParseWarning", (), move || unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_warning(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); });
-}
-unsafe extern "system" fn cb_sidecar_metadata_parse_error<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
-    ffi_guard("SidecarMetadataParseError", (), move || unsafe { (*cb_from_this::<T>(this)).state.sidecar_metadata_parse_error(clip, BrawString(file_name as *mut _).to_string(), line_number, BrawString(info as *mut _).to_string()); });
-}
-unsafe extern "system" fn cb_prepare_pipeline_complete<T: BrawCallback>(this: *mut c_void, user_data: *mut c_void, result: HRESULT) {
-    ffi_guard("PreparePipelineComplete", (), move || unsafe { (*cb_from_this::<T>(this)).state.prepare_pipeline_complete(user_data, result); });
-}
-
-impl<T: BrawCallback> CallbackBox<T> {
-    pub const VTABLE: IBlackmagicRawCallbackVTbl = IBlackmagicRawCallbackVTbl {
-        parent: IUnknownVTbl {
-            QueryInterface: cb_qi::<T>,
-            AddRef: cb_addref::<T>,
-            Release: cb_release::<T>,
-        },
+// SAFETY: the vtable starts with the shared `IUnknown` methods, and every other
+// method reaches its state through `callback::<T>(this)`.
+unsafe impl<T: BrawCallback> ComClass for Callback<T> {
+    type Interface = IBlackmagicRawCallback;
+    type VTable = IBlackmagicRawCallbackVTbl;
+    const IID: GUID = IID_IBlackmagicRawCallback;
+    const NAME: &'static str = "IBlackmagicRawCallback";
+    const VTABLE: &'static IBlackmagicRawCallbackVTbl = &IBlackmagicRawCallbackVTbl {
+        parent: ComObject::<Self>::IUNKNOWN,
         ReadComplete: cb_read_complete::<T>,
+        ReadAudioComplete: cb_read_audio_complete::<T>,
         DecodeComplete: cb_decode_complete::<T>,
         ProcessComplete: cb_process_complete::<T>,
         TrimProgress: cb_trim_progress::<T>,
@@ -141,28 +40,60 @@ impl<T: BrawCallback> CallbackBox<T> {
         SidecarMetadataParseError: cb_sidecar_metadata_parse_error::<T>,
         PreparePipelineComplete: cb_prepare_pipeline_complete::<T>,
     };
-
-    pub fn new(state: T) -> Box<Self> {
-        Box::new(Self {
-            vtbl: &Self::VTABLE,   // &'static to a const, no mutation
-            refcnt: AtomicU32::new(1),
-            state,
-        })
-    }
 }
 
-#[allow(dead_code)]
+/// # Safety
+/// `this` must be a live `Callback<T>` object — guaranteed by the SDK calling
+/// through its vtable.
+unsafe fn callback<'a, T: BrawCallback>(this: *mut c_void) -> &'a T {
+    &unsafe { ComObject::<Callback<T>>::state(this) }.0
+}
+
+unsafe extern "system" fn cb_read_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
+    ffi_guard("ReadComplete", (), move || unsafe { callback::<T>(this).read_complete(job, result, frame); });
+}
+unsafe extern "system" fn cb_read_audio_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, audio_buffer: *mut IBlackmagicRawAudioBuffer) {
+    ffi_guard("ReadAudioComplete", (), move || unsafe { callback::<T>(this).read_audio_complete(job, result, audio_buffer); });
+}
+unsafe extern "system" fn cb_decode_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
+    ffi_guard("DecodeComplete", (), move || unsafe { callback::<T>(this).decode_complete(job, result); });
+}
+unsafe extern "system" fn cb_process_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
+    ffi_guard("ProcessComplete", (), move || unsafe { callback::<T>(this).process_complete(job, result, processed_image); });
+}
+unsafe extern "system" fn cb_trim_progress<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, progress: f32) {
+    ffi_guard("TrimProgress", (), move || unsafe { callback::<T>(this).trim_progress(job, progress); });
+}
+unsafe extern "system" fn cb_trim_complete<T: BrawCallback>(this: *mut c_void, job: *mut IBlackmagicRawJob, result: HRESULT) {
+    ffi_guard("TrimComplete", (), move || unsafe { callback::<T>(this).trim_complete(job, result); });
+}
+unsafe extern "system" fn cb_sidecar_metadata_parse_warning<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
+    ffi_guard("SidecarMetadataParseWarning", (), move || unsafe { callback::<T>(this).sidecar_metadata_parse_warning(clip, read_sdk_string(file_name), line_number, read_sdk_string(info)); });
+}
+unsafe extern "system" fn cb_sidecar_metadata_parse_error<T: BrawCallback>(this: *mut c_void, clip: *mut IBlackmagicRawClip, file_name: *const c_void, line_number: u32, info: *const c_void) {
+    ffi_guard("SidecarMetadataParseError", (), move || unsafe { callback::<T>(this).sidecar_metadata_parse_error(clip, read_sdk_string(file_name), line_number, read_sdk_string(info)); });
+}
+unsafe extern "system" fn cb_prepare_pipeline_complete<T: BrawCallback>(this: *mut c_void, user_data: *mut c_void, result: HRESULT) {
+    ffi_guard("PreparePipelineComplete", (), move || unsafe { callback::<T>(this).prepare_pipeline_complete(user_data, result); });
+}
+
+/// A reference to a callback object. The SDK takes its own while it uses the
+/// callback, so the object outlives whichever lets go last.
 pub(crate) struct CallbackHandle<T: BrawCallback> {
-    raw: *mut IBlackmagicRawCallback,
-    owned: Box<CallbackBox<T>>,
+    raw: ComPtr<IBlackmagicRawCallback>,
+    _state: PhantomData<T>,
 }
 impl<T: BrawCallback> CallbackHandle<T> {
     pub fn new(state: T) -> Self {
-        let owned = CallbackBox::new(state);
-        let raw = (&*owned) as *const _ as *mut IBlackmagicRawCallback;
-        Self { raw, owned }
+        Self { raw: ComObject::create(Callback(state)), _state: PhantomData }
     }
-    pub fn as_mut_ptr(&self) -> *mut IBlackmagicRawCallback { self.raw }
+    pub fn as_mut_ptr(&self) -> *mut IBlackmagicRawCallback { self.raw.as_raw() }
+    /// The callback state. Writing through it races any callback an SDK thread is
+    /// running.
+    pub fn state_ptr(&self) -> *mut T {
+        // SAFETY: the handle's reference keeps the object alive.
+        unsafe { &raw mut (*(self.raw.as_raw() as *mut ComObject<Callback<T>>)).state.0 }
+    }
 }
 
 #[derive(Default)]
@@ -181,6 +112,16 @@ impl BrawCallback for DefaultCallback {
         });
         if let Some(cb) = &self.user_callback {
             cb.read_complete(job, result, frame);
+        }
+    }
+    fn read_audio_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, audio_buffer: *mut IBlackmagicRawAudioBuffer) {
+        callback_complete(job, move || if result == S_OK {
+            ComPtr::new(audio_buffer).map(|mut x| unsafe { x.add_ref(); x })
+        } else {
+            check_hr(result).map(|_| unreachable!())
+        });
+        if let Some(cb) = &self.user_callback {
+            cb.read_audio_complete(job, result, audio_buffer);
         }
     }
     fn decode_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) {
@@ -229,5 +170,33 @@ impl BrawCallback for DefaultCallback {
         if let Some(cb) = &self.user_callback {
             cb.sidecar_metadata_parse_error(clip, file_name, line_number, info);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{ AtomicUsize, Ordering };
+
+    struct Counting(Arc<AtomicUsize>);
+    impl BrawCallback for Counting {}
+    impl Drop for Counting {
+        fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    #[test]
+    fn the_callback_outlives_whichever_of_handle_and_sdk_lets_go_last() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let handle = CallbackHandle::new(Counting(dropped.clone()));
+        let raw = handle.as_mut_ptr();
+        // The SDK takes a reference in `SetCallback`…
+        unsafe { ((*(*raw).vtbl).parent.AddRef)(raw.cast()) };
+        drop(handle);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "the SDK still holds the callback");
+        // …and calls into it until it lets go.
+        unsafe { ((*(*raw).vtbl).TrimProgress)(raw.cast(), std::ptr::null_mut(), 0.5) };
+        assert_eq!(unsafe { ((*(*raw).vtbl).parent.Release)(raw.cast()) }, 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 }

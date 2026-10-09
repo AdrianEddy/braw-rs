@@ -29,6 +29,8 @@ impl Iterator for MetadataIterator {
         }
         let mut key_ptr = std::ptr::null_mut();
         self.raw.GetKey(&mut key_ptr).ok()?;
+        // Own the key at once, so that every return below frees it.
+        let key = unsafe { take_sdk_string(key_ptr) };
 
         let value;
         unsafe {
@@ -41,10 +43,7 @@ impl Iterator for MetadataIterator {
             value = self.factory.lib.variant_to_rust(var);
         }
 
-        Some((
-            BrawString(key_ptr as *mut _).to_string(),
-            value
-        ))
+        Some((key, value))
     }
 }
 
@@ -72,7 +71,7 @@ impl Iterator for PipelineIterator {
             match self.raw.Next() {
                 Ok(S_FALSE) => return None,
                 Err(_) => {
-                    log::error!("Failed to advance metadata iterator");
+                    log::error!("Failed to advance pipeline iterator");
                     return None;
                 }
                 _ => { }
@@ -82,13 +81,15 @@ impl Iterator for PipelineIterator {
         }
         let mut name_ptr = std::ptr::null_mut();
         self.raw.GetName(&mut name_ptr).ok()?;
+        // Own the name at once, so that every return below frees it.
+        let name = unsafe { take_sdk_string(name_ptr) };
         let mut interop = BlackmagicRawInterop::default();
         self.raw.GetInterop(&mut interop).ok()?;
         let mut pipeline = BlackmagicRawPipeline::default();
         self.raw.GetPipeline(&mut pipeline).ok()?;
 
         Some(PipelineIteratorItem {
-            name: BrawString(name_ptr as *mut _).to_string(),
+            name,
             interop,
             pipeline
         })
@@ -132,7 +133,7 @@ impl Iterator for PipelineDeviceIterator {
             match self.raw.Next() {
                 Ok(S_FALSE) => return None,
                 Err(_) => {
-                    log::error!("Failed to advance metadata iterator");
+                    log::error!("Failed to advance pipeline device iterator");
                     return None;
                 }
                 _ => {

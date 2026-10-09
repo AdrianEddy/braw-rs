@@ -51,11 +51,8 @@ impl RawLibrary {
                         }
                     }
                     #[cfg(any(target_os = "macos", target_os = "ios"))] {
-                        let cf = v.Anonymous.Anonymous.Anonymous.bstrVal as CFStringRef;
-                        let tmp = BrawString(cf);
-                        let string = tmp.to_string();
-                        std::mem::forget(tmp); // Don't free the CFString here, it will be free by VariantClear
-                        VariantValue::String(string)
+                        // Borrowed: `VariantClear` below releases the CFString.
+                        VariantValue::String(read_sdk_string(v.Anonymous.Anonymous.Anonymous.bstrVal as *const core::ffi::c_void))
                     }
                     #[cfg(target_os = "linux")] {
                         let p = v.Anonymous.Anonymous.Anonymous.bstrVal as *mut i8;
@@ -244,7 +241,10 @@ impl<'a> NativeVariant<'a> {
             }
         }
 
-        dest.Anonymous.Anonymous.vt = ((VT_SAFEARRAY as u32) | elem_vt as u32) as u16;
+        // A plain `VT_SAFEARRAY`, the element type held by the array itself — as the
+        // SDK hands arrays out. `VT_SAFEARRAY | elem_vt` is no vartype at all, and the
+        // SDK rejects it (`E_FAIL` from e.g. `SetSidecarPost3DLUT`).
+        dest.Anonymous.Anonymous.vt = VT_SAFEARRAY;
         dest.Anonymous.Anonymous.Anonymous.parray = sa;
     }
 
@@ -263,7 +263,8 @@ impl<'a> NativeVariant<'a> {
                         let _ = (lib.SafeArrayUnaccessData)(sa);
                     }
                 }
-                dest.Anonymous.Anonymous.vt = ((VT_SAFEARRAY as u32) | elem_vt as u32) as VARENUM;
+                // As on Windows: the element type is the array's, not the variant's.
+                dest.Anonymous.Anonymous.vt = VT_SAFEARRAY;
                 dest.Anonymous.Anonymous.Anonymous.parray = sa;
             }
         };

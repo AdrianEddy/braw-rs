@@ -18,10 +18,10 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * **Idiomatic iterators & enums**.
 * **Async runtime agnostic**: works with any executor; use `pollster` to block when you want simplicity.
 * **Native docs**: all structs and enums are documented based on the official SDK documentation pdf
-* **Cross-platform**: Windows, Linux, macOS, and iOS.
-* **Virtual files** *(optional `hookfs` feature)*: decode — and write — `.braw` clips from arbitrary `Read + Seek` streams (in-memory, network, encrypted, …) without ever touching disk.
+* **Cross-platform**: Windows (x64 and ARM64), Linux, macOS, and iOS.
+* **Custom file I/O**: decode — and write — `.braw` clips from memory, `Read + Seek` streams, or any byte source you implement (network, encrypted, …) without ever touching disk.
 
-**Based on Blackmagic RAW SDK 5.0.0**.
+**Based on Blackmagic RAW SDK 6.0**, which it requires: a library of another version is refused with `BrawError::UnsupportedSdkVersion` rather than called through a mismatched interface.
 
 ---
 
@@ -32,7 +32,7 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * Install **Blackmagic RAW SDK** for your platform.
 * Ensure the SDK library is discoverable at runtime:
 
-  * **Windows**: `BlackmagicRawAPI.dll` in the executable dir or on `PATH`.
+  * **Windows**: `BlackmagicRawAPI.dll` in the executable dir or on `PATH` — from `Win/Libraries` for x64 builds, `Win/Libraries/ARM64` for ARM64 builds (CPU and OpenCL pipelines; the SDK ships no CUDA decoder for ARM64).
   * **Linux**: `libBlackmagicRawAPI.so` on `LD_LIBRARY_PATH` or `rpath`.
   * **macOS/iOS**: `BlackmagicRawAPI.framework` in `@rpath` or `Frameworks`.
 
@@ -108,49 +108,42 @@ This crate **does not link** to the SDK at build time. At runtime it uses `liblo
 
 ---
 
-## Virtual files & streaming (`hookfs`)
+## Custom file I/O
 
-The Blackmagic RAW SDK exposes clip access **only by path string** — there is no
-`IStream` / open-from-buffer hook. The optional **`hookfs`** feature bridges that gap:
-it hands the SDK a *synthetic* path and transparently intercepts the file-I/O calls the
-SDK makes against it, servicing them from a stream **you** provide. The synthetic path
-never exists on disk.
+`BlackmagicRaw::open_clip_from_file` opens a clip through the SDK's `IBlackmagicRawFile` /
+`IBlackmagicRawFilesystem` interfaces instead of a path, so a clip can come from memory, a
+network source, an encrypted container, or anything else that can serve bytes at an
+offset. Writes — a saved sidecar, a trim, a cube file — go through the same interfaces, so
+they can stay in memory too.
 
-This lets you decode `.braw` clips straight from memory, a network source, an encrypted
-blob, an archive, or any other `Read + Seek` stream — no temp files, no copies. Writes
-(sidecar save/reload, `CreateJobTrim` output) are serviced entirely from an in-memory
-VFS too, so they never hit the physical filesystem either.
+* `BrawFile` is a byte source: a name, a length, and positional reads (plus writes, for
+  outputs). Ready-made: `BytesFile` (any `AsRef<[u8]>`, read without copying),
+  `StreamFile` (any `Read + Seek`) and `MemoryFile` (readable and writable).
+* `BrawFilesystem` resolves a clip's companion files — its `.sidecar`, the other cards of
+  a multi-card recording — and creates the ones the SDK writes. `FileSet` is a set of
+  named files that keeps created files in memory; `NoCompanions` has none.
+* `BlackmagicRawFile` presents the two to the SDK. A clip opened from it keeps it alive.
+* The SDK calls `BrawFile::commit` once on every file it finishes writing — the place
+  to finalise or upload it.
 
-Available on **Windows, Linux, macOS, and iOS** — the same platforms as the SDK
-bindings. The hooking engine patches the SDK's file I/O on each platform's native
-binary format (PE imports on Windows, ELF/Mach-O on Linux/Apple).
+The SDK calls these from its worker threads, concurrently, so implementations are
+`Send + Sync`. I/O errors convert into `BrawError::Io`, so `?` works on both.
 
-### Enable it
+### Decode from memory
 
-```toml
-[dependencies]
-braw = { version = "0.1", features = ["hookfs"] }
-```
-
-### Decode from an in-memory stream
-
-The simplest case — one clip, one stream:
-
-```rust ignore
+```rust no_run
 use braw::*;
-use std::io::Cursor;
+use std::sync::Arc;
 
 fn main() -> Result<(), BrawError> {
     let braw = Factory::load_from(default_library_name())?;
     let codec = braw.create_codec()?;
 
     // Bytes from anywhere: an HTTP body, a decrypted buffer, an mmap, …
-    let bytes = std::fs::read("A001.braw").unwrap();
+    let bytes = std::fs::read("A001.braw")?;
+    let file = BlackmagicRawFile::standalone(Arc::new(BytesFile::new("A001.braw", bytes)));
 
-    // `open_clip_from` mounts the stream under a synthetic path and opens it.
-    // The returned `VirtualClip` derefs to `BlackmagicRawClip`, so every clip
-    // method is available directly.
-    let clip = codec.open_clip_from("A001.braw", Cursor::new(bytes))?;
+    let clip = codec.open_clip_from_file(&file)?;
     println!("{}x{}, {} frames", clip.width()?, clip.height()?, clip.frame_count()?);
     Ok(())
 }
@@ -158,52 +151,53 @@ fn main() -> Result<(), BrawError> {
 
 ### Clips with sidecars or multicard parts
 
-A clip's `.sidecar` is read during `OpenClip`, and spanned/multicard clips reference
-sibling files. Mount every sibling with the builder **before** calling `open()`:
+The SDK names a clip's companions after the clip (`A001.braw` → `A001.sidecar`) and asks
+the filesystem for them while opening the clip:
 
-```rust ignore
+```rust no_run
 use braw::*;
-use std::io::Cursor;
+use std::sync::Arc;
 
-let clip = codec
-    .virtual_clip("A001.braw")?
-    .file("A001.braw",    Cursor::new(braw_bytes))?
-    .file("A001.sidecar", Cursor::new(sidecar_bytes))?  // read during OpenClip
-    .file("A001_2.braw",  Cursor::new(part2_bytes))?    // multicard / spanned sibling
-    .open()?;
+fn main() -> Result<(), BrawError> {
+    let codec = Factory::load_from(default_library_name())?.create_codec()?;
+
+    // The clip from any `Read + Seek` (a socket, a decrypting reader, …), its sidecar from memory.
+    let files = Arc::new(FileSet::new());
+    files.insert(Arc::new(StreamFile::new("A001.braw", std::fs::File::open("A001.braw")?)?));
+    files.insert(Arc::new(BytesFile::new("A001.sidecar", std::fs::read("A001.sidecar")?)));
+
+    let clip = codec.open_clip_from_file(&BlackmagicRawFile::new(files.get("A001.braw").unwrap(), files.clone()))?;
+    assert!(clip.sidecar_file_attached()?);
+    Ok(())
+}
 ```
 
-Every sibling is namespaced under a unique per-clip directory, so opening two clips with
-the same logical name (e.g. two cards' shared `A001.braw`) never collides, and they can
-be decoded concurrently on separate threads.
+### Writing without touching disk
 
-### Writable output — no disk
+```rust no_run
+use braw::*;
+use std::sync::Arc;
 
-Reserve an in-memory writable file, let the SDK write to it (sidecar re-save, a trim
-output), then read the bytes back — all without touching disk:
+fn main() -> Result<(), BrawError> {
+    let codec = Factory::load_from(default_library_name())?.create_codec()?;
+    let files = Arc::new(FileSet::new());
+    files.insert(Arc::new(BytesFile::new("A001.braw", std::fs::read("A001.braw")?)));
+    let clip = codec.open_clip_from_file(&BlackmagicRawFile::new(files.get("A001.braw").unwrap(), files.clone()))?;
 
-```rust ignore
-let clip = codec
-    .virtual_clip("A001.braw")?
-    .file("A001.braw", Cursor::new(braw_bytes))?
-    .open()?;
+    // Save an edited sidecar: the SDK creates `A001.sidecar` through the filesystem.
+    clip.set_metadata("reel", VariantValue::String("HERO".into()))?;
+    clip.save_sidecar_file()?;
+    let sidecar_bytes = files.get("A001.sidecar").unwrap().read_to_vec()?;
 
-// Edit metadata and save the sidecar into the virtual FS.
-clip.set_metadata("reel", VariantValue::String("HERO".into()))?;
-clip.save_sidecar_file()?;
+    // Trim into memory.
+    let output = Arc::new(MemoryFile::new("A001_trim.braw"));
+    pollster::block_on(clip.trim_to_file(&BlackmagicRawFile::standalone(output.clone()), 0, 24, None, None))?;
+    let trimmed_bytes = output.contents();
 
-// Read the saved sidecar bytes straight back from memory — never touching disk.
-let sidecar_bytes = clip.read_virtual_path(&clip.sidecar_path());
+    println!("sidecar: {} bytes, trim: {} bytes", sidecar_bytes.len(), trimmed_bytes.len());
+    Ok(())
+}
 ```
-
-### How it works
-
-`hookfs` installs its hooks into the loaded SDK module **once per process**, discovering
-the module by the address of a known SDK export (never a fragile basename) so late-loaded
-decoder plugins are patched too. Hooks persist for the process lifetime; mounts come and
-go with your `VirtualClip`s. See `src/virtualfs.rs` for the full API surface
-(`Factory::enable_virtual_files`, `BlackmagicRaw::virtual_clip` / `open_clip_from`,
-`VirtualClip`, `VirtualClipBuilder`).
 
 > On **Linux**, the SDK `dlopen`s its decoder plugins (`libDecoder*.so`,
 > `libInstructionSetServices*.so`) by bare name at runtime, so the directory holding them
@@ -223,11 +217,10 @@ Yes. Use `pollster::block_on` or your runtime’s `block_on`.
 Yes. Use `codec.set_callback()` and implement `BrawCallback` for your type.
 
 **Can I decode a clip that isn't on disk (in memory, over the network, encrypted)?**
-Yes — enable the `hookfs` feature and use `open_clip_from` / `virtual_clip`. See
-[Virtual files & streaming](#virtual-files--streaming-hookfs).
+Yes — see [Custom file I/O](#custom-file-io).
 
 **Which SDK version is supported?**
-**5.0.0**. Other versions may work but are not guaranteed.
+**6.0**. `Factory::create_codec` refuses a library of another version with `BrawError::UnsupportedSdkVersion`, naming the version it found: SDK 6.0 changed interfaces in place, so older libraries cannot be driven by these bindings — nor can a later one that changes them again.
 
 ---
 
