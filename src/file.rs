@@ -49,10 +49,16 @@ pub trait BrawFile: Send + Sync + 'static {
 
     /// Read up to `buf.len()` bytes at `offset` into `buf`, returning how many were
     /// read. A short read is retried, so returning `0` means end of file.
+    ///
+    /// An `Interrupted` error is retried too, per the EINTR convention (as std's
+    /// `read_exact` does). A source that reports a lasting condition that way —
+    /// a cancellation — must map it to another kind, or the SDK's worker thread
+    /// retries it forever.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
 
     /// Write `buf` at `offset`, extending the file as needed, and return how many
     /// bytes were written. Read-only files keep the default, `Unsupported`.
+    /// `Interrupted` is retried, as for [`read_at`](Self::read_at).
     fn write_at(&self, offset: u64, buf: &[u8]) -> io::Result<usize> {
         let _ = (offset, buf);
         Err(io::ErrorKind::Unsupported.into())
