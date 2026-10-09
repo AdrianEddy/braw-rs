@@ -2,28 +2,39 @@
 name = "braw"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["Adrian <adrian.eddy at gmail>"]
-description = "Rust bindings for Blackmagic RAW SDK"
+description = "Safe, async Rust bindings for the Blackmagic RAW SDK"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AdrianEddy/braw-rs"
+documentation = "https://docs.rs/braw"
 readme = "README.md"
-keywords = ["blackmagic", "braw", "video"]
-categories = ["video", "media-processing"]
+keywords = ["blackmagic", "braw", "raw", "video", "camera"]
+categories = ["api-bindings", "multimedia::video"]
+include = ["/src", "/examples", "/tests", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
 
 [dependencies]
-log = "0.4"
-paste = "1.0"
+atomic-waker = "1.1"
 libloading = "0.9"
-futures-util = "0.3"
-serde = { version = "1.0", features = ["derive"], optional = true }
+log = "0.4.20"
+pastey = "0.2"
+serde = { version = "1.0.200", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole"] }
 
 [features]
 default = ["serde"]
+## Implement `serde::Serialize` for `VariantValue`.
 serde = ["dep:serde"]
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation","Win32_System_Com","Win32_System_Variant", "Win32_System_Ole"] }
 
 [dev-dependencies]
 pollster          = "1.0"
 static_assertions = "1.1"
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]

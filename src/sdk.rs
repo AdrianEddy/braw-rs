@@ -3,7 +3,8 @@
 
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
+// The wrappers mirror the SDK's method names, `Next` included.
+#![allow(clippy::should_implement_trait)]
 
 // Based on Blackmagic RAW SDK 6.0
 
@@ -54,6 +55,7 @@ pub(crate) const IID_IBlackmagicRawAudioBuffer:               GUID = GUID::new([
 /// These types define the possible data types that can be stored in VARIANT structures when working with metadata in Blackmagic RAW files.
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[allow(clippy::unnecessary_cast)] // `VT_*` are `u16` on Windows
 pub enum BlackmagicRawVariantType {
     #[default]
     /// Undefined type
@@ -85,6 +87,7 @@ pub enum BlackmagicRawVariantType {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawResourceType {
     #[default]
+    /// No value
     Null = 0,
     /// Page aligned CPU addressable memory
     BufferCPU    = /* 'cpub' */ 0x63707562,
@@ -104,6 +107,7 @@ pub enum BlackmagicRawResourceType {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawResourceFormat {
     #[default]
+    /// No value
     Null = 0,
     /// Unsigned 8bit interleaved RGBA
     RGBAU8       = /* 'rgba' */ 0x72676261,
@@ -142,6 +146,7 @@ pub enum BlackmagicRawResourceFormat {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawResourceUsage {
     #[default]
+    /// No value
     Null = 0,
     /// CPU readable and writable memory
     ReadCPUWriteCPU = /* 'rcwc' */ 0x72637763,
@@ -160,6 +165,7 @@ pub enum BlackmagicRawResourceUsage {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawPipeline {
     #[default]
+    /// No value
     Null = 0,
     /// CPU pipeline with no GPU acceleration
     CPU    = /* 'cpub' */ 0x63707562,
@@ -178,6 +184,7 @@ pub enum BlackmagicRawPipeline {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawInstructionSet {
     #[default]
+    /// No value
     Null = 0,
     /// SSE 4.1 CPU Instruction Set
     SSE41 = /* 'se41' */ 0x73653431,
@@ -194,6 +201,7 @@ pub enum BlackmagicRawInstructionSet {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawAudioFormat {
     #[default]
+    /// No value
     Null = 0,
     /// PCM little endian audio
     PCMLittleEndian = /* 'pcml' */ 0x70636D6C
@@ -206,6 +214,7 @@ pub enum BlackmagicRawAudioFormat {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawResolutionScale {
     #[default]
+    /// No value
     Null = 0,
     /// Full Resolution
     Full    = /* 'full' */ 0x66756C6C,
@@ -224,6 +233,7 @@ pub enum BlackmagicRawResolutionScale {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawClipProcessingAttribute {
     #[default]
+    /// No value
     Null = 0,
     /// Blackmagic Color Science generation (u16)
     ColorScienceGen          = /* 'csgn' */ 0x6373676E,
@@ -288,6 +298,7 @@ pub enum BlackmagicRawClipProcessingAttribute {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawFrameProcessingAttribute {
     #[default]
+    /// No value
     Null = 0,
     /// The white balance Kelvin value (u32)
     WhiteBalanceKelvin = /* 'wbkv' */ 0x77626B76,
@@ -308,6 +319,7 @@ pub enum BlackmagicRawFrameProcessingAttribute {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawImmersiveAttribute {
     #[default]
+    /// No value
     Null = 0,
     /// UUID of the projection data file (string)
     OpticalLensProcessingDataFileUUID = /* 'oldu' */ 0x6F6C6475,
@@ -328,6 +340,7 @@ pub enum BlackmagicRawImmersiveAttribute {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawInterop {
     #[default]
+    /// No value
     Null = 0,
     /// No interoperability
     None   = /* 'none' */ 0x6E6F6E65,
@@ -340,6 +353,7 @@ pub enum BlackmagicRawInterop {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawAnamorphicRatio {
     #[default]
+    /// No value
     Null = 0,
     /// Use anamorphic ratio from metadata
     FromMetadata   = /* 'meta' */ 0x6D657461,
@@ -364,6 +378,7 @@ pub enum BlackmagicRawAnamorphicRatio {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawRotation {
     #[default]
+    /// No value
     Null = 0,
     /// Use rotation from metadata
     FromMetadata = /* 'meta' */ 0x6D657461,
@@ -382,6 +397,7 @@ pub enum BlackmagicRawRotation {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawFlip {
     #[default]
+    /// No value
     Null = 0,
     /// Use flip from metadata
     FromMetadata = /* 'meta' */ 0x6D657461,
@@ -402,6 +418,7 @@ pub enum BlackmagicRawFlip {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BlackmagicRawSizeLimit {
     #[default]
+    /// No value
     Null = 0,
     /// No size limit
     None  = /* 'szln' */ 0x737A6C6E,
@@ -465,20 +482,22 @@ braw_interface! {
         /// Registers a callback with the codec object for receiving processing notifications
         fn SetCallback(cb: *mut IBlackmagicRawCallback) -> HRESULT;
         /// Asynchronously prepares the current pipeline for decoding to reduce first-frame latency
-        fn PreparePipeline(pipeline: u32, pipelineContext: *mut c_void, pipelineCommandQueue: *mut c_void, userData: *mut c_void) -> HRESULT;
+        fn PreparePipeline(pipeline: BlackmagicRawPipeline, pipelineContext: *mut c_void, pipelineCommandQueue: *mut c_void, userData: *mut c_void) -> HRESULT;
         /// Asynchronously prepares the current pipeline using a device object
         fn PreparePipelineForDevice(device: *mut IBlackmagicRawPipelineDevice, userData: *mut c_void) -> HRESULT;
         /// Blocking call which will only return once all jobs have been completed
         fn FlushJobs() -> HRESULT;
     }
+    field callback: std::sync::Arc<CallbackHandle<DefaultCallback>>,
+    field core: std::sync::Arc<CodecCore>,
     /// Each codec interface will have its own memory storage and decoder.
     ///
     /// When decoding multiple clips via one codec, first in first out ordering will apply.
     /// This is the main interface for working with Blackmagic RAW files.
     #[derive(Clone)]
     impl {
-        void FlushJobs => fn flush_jobs(&mut Self); /// Blocking call which will only return once all jobs have been completed
-        interface fn configuration(&self) -> BlackmagicRawConfiguration; /// Get the configuration interface for this codec
+        void FlushJobs => fn flush_jobs(&Self); /// Blocking call which will only return once all jobs have been completed
+        // custom impl configuration
         interface fn configuration_ex(&self) -> BlackmagicRawConfigurationEx; /// Get the extended configuration interface for this codec
         interface fn manual_decoder_flow1(&self) -> BlackmagicRawManualDecoderFlow1; /// Get the manual decoder flow 1 (CPU) interface
         interface fn manual_decoder_flow2(&self) -> BlackmagicRawManualDecoderFlow2; /// Get the manual decoder flow 2 (hybrid CPU/GPU) interface
@@ -671,6 +690,7 @@ braw_interface! {
         /// Get the camera support version
         fn GetCameraSupportVersion(version: *mut *mut c_void) -> HRESULT;
     }
+    field core: std::sync::Arc<CodecCore>,
     /// Configuration for Codec Object. Configuration properties are read on first OpenClip().
     ///
     /// The configuration properties are read when the first call to OpenClip() occurs.
@@ -684,10 +704,10 @@ braw_interface! {
         scalar GetWriteMetadataPerFrame=> fn write_metadata_per_frame(&Self) -> bool; /// Gets if metadata is written per-frame
         scalar IsPipelineSupported     => fn is_pipeline_supported(&Self, pipeline: BlackmagicRawPipeline) -> bool; /// Verifies if a pipeline is supported
         scalar3 GetPipeline            => fn pipeline(&Self) -> (BlackmagicRawPipeline, *mut c_void, *mut c_void); /// Get pipeline configuration (type, context, command queue)
-        void   SetPipeline             => fn set_pipeline(&mut Self, pipeline: BlackmagicRawPipeline, pipeline_context: *mut c_void, pipeline_command_queue: *mut c_void); /// Set pipeline to use for decoding
         void   SetCPUThreads           => fn set_cpu_threads(&mut Self, thread_count: u32); /// Sets the number of CPU threads to use
         void   SetWriteMetadataPerFrame=> fn set_write_metadata_per_frame(&mut Self, write_per_frame: bool); /// Sets if metadata is written per-frame
-        void   SetFromDevice           => fn set_from_device(&mut Self, pipeline_device: BlackmagicRawPipelineDevice); /// Configure from a device object
+        // custom impl SetPipeline
+        // custom impl SetFromDevice
     }
 }
 // SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
@@ -772,10 +792,10 @@ braw_interface! {
     /// over resource allocations. An internal resource manager that implements this interface is provided by default.
     #[derive(Clone)]
     impl {
-        scalar CreateResource      => fn create_resource(&Self, context: *mut c_void, command_queue: *mut c_void, size_bytes: u32, typ: BlackmagicRawResourceType, usage: BlackmagicRawResourceUsage) -> *mut c_void; /// Create a new resource
-        scalar GetResourceHostPointer => fn resource_host_pointer(&Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, resource_type: BlackmagicRawResourceType) -> *mut c_void; /// Get host pointer to resource
-        void   CopyResource        => fn copy_resource(&Self, context: *mut c_void, command_queue: *mut c_void, source: *mut c_void, source_type: BlackmagicRawResourceType, destination: *mut c_void, destination_type: BlackmagicRawResourceType, size_bytes: u32, copy_async: bool); /// Copy between resources
-        void   ReleaseResource     => fn release_resource(&mut Self, context: *mut c_void, command_queue: *mut c_void, resource: *mut c_void, typ: BlackmagicRawResourceType); /// Release a resource
+        // custom impl CreateResource
+        // custom impl ReleaseResource
+        // custom impl CopyResource
+        // custom impl GetResourceHostPointer
     }
 }
 // SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
@@ -951,6 +971,11 @@ unsafe impl Send for BlackmagicRawProcessedImage {}
 unsafe impl Sync for BlackmagicRawProcessedImage {}
 
 braw_interface! {
+    /// Asynchronous job object.
+    ///
+    /// This is the base object that is returned when any job is created with the SDK.
+    /// Its user data identifies the future awaiting it, so it is never handed out:
+    /// the futures this crate returns submit, abort and complete their jobs.
     BlackmagicRawJob {
         /// Submit the job to the decoder's internal queue
         fn Submit() -> HRESULT;
@@ -961,44 +986,26 @@ braw_interface! {
         /// Retrieve previously attached generic userdata from the job object
         fn GetUserData(userData: *mut *mut c_void) -> HRESULT;
     }
-    /// Asynchronous job object.
-    ///
-    /// This is the base object that is returned when any job is created with the SDK.
-    /// Use this to control and identify jobs when callbacks occur.
-    #[derive(Clone)]
-    impl {
-        scalar GetUserData => fn user_data(&Self) -> *mut c_void; /// Get attached user data
-        void SetUserData   => fn set_user_data(&mut Self, user_data: *mut c_void); /// Set user data
-        void Submit        => fn submit     (&mut Self); /// Submit job to decoder queue
-        void Abort         => fn abort      (&mut Self); /// Attempt to abort the job
-
-        interface fn read_job_hints(&self) -> BlackmagicRawReadJobHints; /// Get read job hints interface
-    }
 }
-// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
-unsafe impl Send for BlackmagicRawJob {}
 
+/// A hint for a read-frame job.
 pub enum ReadJobHints {
+    /// No hint
     None,
+    /// Perform the read at this resolution scale
     Scale(BlackmagicRawResolutionScale)
 }
 
 braw_interface! {
+    /// Read job hints.
+    ///
+    /// This object can be used to provide optimisation hints to the read job,
+    /// such as specifying the scale at which to perform the read (see [`ReadJobHints`]).
     BlackmagicRawReadJobHints {
         /// Set the reader resolution scale
         fn SetReaderResolutionScale(readerResolutionScale: BlackmagicRawResolutionScale) -> HRESULT;
     }
-    /// Read job hints.
-    ///
-    /// This object can be used to provide optimisation hints to the read job,
-    /// such as specifying the scale at which to perform the read.
-    #[derive(Clone)]
-    impl {
-        void SetReaderResolutionScale => fn set_reader_resolution_scale(&mut Self, reader_resolution_scale: BlackmagicRawResolutionScale); /// Set the scale for reading
-    }
 }
-// SAFETY: Tier 1 - moving this stateful COM handle between threads is sound under BMD's free-threaded model; it is intentionally not `Sync` (see the "Thread-safety" note above).
-unsafe impl Send for BlackmagicRawReadJobHints {}
 
 braw_interface! {
     /// Callback for IBlackmagicRaw.
@@ -1559,7 +1566,9 @@ unsafe impl Sync for BlackmagicRawAudioBuffer {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct BmdIoVec {
+    /// Start of the buffer
     pub iov_base: *mut c_void,
+    /// Length of the buffer in bytes
     pub iov_len: u64,
 }
 

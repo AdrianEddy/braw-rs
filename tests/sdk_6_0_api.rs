@@ -4,8 +4,7 @@
 //! Calls into the methods SDK 6.0 added to existing interfaces — `sdk_layout`
 //! proves their vtable slots, this proves their signatures against the real SDK.
 //!
-//! Same requirements as `custom_io_decode` (SDK in `sdk/` on Windows, `.so` set on
-//! `LD_LIBRARY_PATH` on Linux).
+//! Same requirements as `custom_io_decode`.
 
 mod common;
 

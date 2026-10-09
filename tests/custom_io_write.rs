@@ -6,8 +6,7 @@
 //! file — and read the results back, proving the bytes are served from memory and
 //! never touch a disk.
 //!
-//! Same requirements as `custom_io_decode` (SDK in `sdk/` on Windows, `.so` set on
-//! `LD_LIBRARY_PATH` on Linux).
+//! Same requirements as `custom_io_decode`.
 
 mod common;
 

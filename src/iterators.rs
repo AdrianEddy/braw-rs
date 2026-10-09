@@ -3,6 +3,7 @@
 
 use super::*;
 
+/// An iterator over the `(key, value)` metadata entries of a clip or frame.
 pub struct MetadataIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawMetadataIterator>,
     pub(crate) is_first: bool,
@@ -16,7 +17,8 @@ impl Iterator for MetadataIterator {
     type Item = (String, VariantValue);
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
-            match self.raw.Next() {
+            // SAFETY: `Next` takes no arguments.
+            match unsafe { self.raw.Next() } {
                 Ok(S_FALSE) => return None,
                 Err(_) => {
                     log::error!("Failed to advance metadata iterator");
@@ -28,11 +30,14 @@ impl Iterator for MetadataIterator {
             self.is_first = false;
         }
         let mut key_ptr = std::ptr::null_mut();
-        self.raw.GetKey(&mut key_ptr).ok()?;
+        // SAFETY: `key_ptr` receives a string the SDK allocates for the caller.
+        unsafe { self.raw.GetKey(&mut key_ptr) }.ok()?;
         // Own the key at once, so that every return below frees it.
         let key = unsafe { take_sdk_string(key_ptr) };
 
         let value;
+        // SAFETY: an initialised `VARIANT` on this stack receives the value, which
+        // `variant_to_rust` takes ownership of.
         unsafe {
             let mut var: VARIANT = std::mem::zeroed();
             let _lib = &self.factory.lib;
@@ -50,13 +55,19 @@ impl Iterator for MetadataIterator {
 ///////////////////////////////////////////////////////
 
 
+/// A processing pipeline available on this system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineIteratorItem {
+    /// The pipeline's name
     pub name: String,
+    /// The interoperability the pipeline offers
     pub interop: BlackmagicRawInterop,
+    /// The pipeline
     pub pipeline: BlackmagicRawPipeline,
 }
 
+/// An iterator over the processing pipelines available on this system (see
+/// [`Factory::pipeline_iter`]).
 #[allow(dead_code)]
 pub struct PipelineIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawPipelineIterator>,
@@ -68,7 +79,8 @@ impl Iterator for PipelineIterator {
     type Item = PipelineIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
-            match self.raw.Next() {
+            // SAFETY: `Next` takes no arguments.
+            match unsafe { self.raw.Next() } {
                 Ok(S_FALSE) => return None,
                 Err(_) => {
                     log::error!("Failed to advance pipeline iterator");
@@ -80,13 +92,17 @@ impl Iterator for PipelineIterator {
             self.is_first = false;
         }
         let mut name_ptr = std::ptr::null_mut();
-        self.raw.GetName(&mut name_ptr).ok()?;
+        // SAFETY: `name_ptr` receives a string the SDK allocates for the caller.
+        unsafe { self.raw.GetName(&mut name_ptr) }.ok()?;
         // Own the name at once, so that every return below frees it.
         let name = unsafe { take_sdk_string(name_ptr) };
         let mut interop = BlackmagicRawInterop::default();
-        self.raw.GetInterop(&mut interop).ok()?;
         let mut pipeline = BlackmagicRawPipeline::default();
-        self.raw.GetPipeline(&mut pipeline).ok()?;
+        // SAFETY: out-parameters on this stack.
+        unsafe {
+            self.raw.GetInterop(&mut interop).ok()?;
+            self.raw.GetPipeline(&mut pipeline).ok()?;
+        }
 
         Some(PipelineIteratorItem {
             name,
@@ -99,8 +115,11 @@ impl Iterator for PipelineIterator {
 ///////////////////////////////////////////////////////
 
 use std::sync::atomic::AtomicUsize;
+/// A device available for a pipeline.
 pub struct PipelineDeviceIteratorItem {
+    /// The interoperability the device's pipeline offers
     pub interop: BlackmagicRawInterop,
+    /// The device's pipeline
     pub pipeline: BlackmagicRawPipeline,
 
     index: usize,
@@ -109,16 +128,20 @@ pub struct PipelineDeviceIteratorItem {
     factory: Factory,
 }
 impl PipelineDeviceIteratorItem {
+    /// Create the device. Only the iterator's current item can, so call this before
+    /// advancing the iterator.
     pub fn create_device(&self) -> Result<BlackmagicRawPipelineDevice, BrawError> {
-        let mut ptr = std::ptr::null_mut();
         if self.index != self.iter_index.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(BrawError::Other("Devices cannot be created out of order from the iterator".into()));
         }
-        let _ = self.raw.CreateDevice(&mut ptr)?;
-        Ok(BlackmagicRawPipelineDevice { raw: ComPtr::new(ptr)?, factory: self.factory.clone(), parent_guards: vec![].into() } )
+        // SAFETY: returns a new device through its out-parameter.
+        let raw = unsafe { out_interface(|out| self.raw.CreateDevice(out))? };
+        Ok(BlackmagicRawPipelineDevice { raw, factory: self.factory.clone(), parent_guards: vec![].into() } )
     }
 }
 
+/// An iterator over the devices available for a pipeline (see
+/// [`Factory::pipeline_device_iter`]).
 pub struct PipelineDeviceIterator {
     pub(crate) raw: ComPtr<IBlackmagicRawPipelineDeviceIterator>,
     pub(crate) is_first: bool,
@@ -130,7 +153,8 @@ impl Iterator for PipelineDeviceIterator {
     type Item = PipelineDeviceIteratorItem;
     fn next(&mut self) -> Option<Self::Item> {
         if !self.is_first {
-            match self.raw.Next() {
+            // SAFETY: `Next` takes no arguments.
+            match unsafe { self.raw.Next() } {
                 Ok(S_FALSE) => return None,
                 Err(_) => {
                     log::error!("Failed to advance pipeline device iterator");
@@ -145,9 +169,12 @@ impl Iterator for PipelineDeviceIterator {
         }
         let current_index = self.current_index.load(std::sync::atomic::Ordering::SeqCst);
         let mut interop = BlackmagicRawInterop::default();
-        self.raw.GetInterop(&mut interop).ok()?;
         let mut pipeline = BlackmagicRawPipeline::default();
-        self.raw.GetPipeline(&mut pipeline).ok()?;
+        // SAFETY: out-parameters on this stack.
+        unsafe {
+            self.raw.GetInterop(&mut interop).ok()?;
+            self.raw.GetPipeline(&mut pipeline).ok()?;
+        }
 
         Some(PipelineDeviceIteratorItem {
             interop,

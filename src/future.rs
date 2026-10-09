@@ -2,7 +2,7 @@
 // Copyright © 2025 Adrian <adrian.eddy at gmail>
 
 use std::{ future::Future, panic::{ catch_unwind, AssertUnwindSafe }, pin::Pin, sync::{ atomic::{ AtomicBool, Ordering }, Arc, Mutex, PoisonError }, task::{ Context, Poll }};
-use futures_util::task::AtomicWaker;
+use atomic_waker::AtomicWaker;
 use core::ffi::c_void;
 use super::*;
 
@@ -26,33 +26,42 @@ pub(crate) struct State<T> {
     /// or spurious callback observes `true` and becomes a safe no-op.
     pub(crate) claimed: AtomicBool,
     pub(crate) result: Mutex<Option<Result<T, BrawError>>>,
+    /// Everything the job uses — the objects it reads, the memory it reads or
+    /// writes — kept alive until the job has completed *and* the future is gone, so
+    /// that dropping a pending future frees nothing the job still uses.
+    _keep_alive: Held<DropOrderVec<ComPtrRefGuard>>,
 }
 impl<T> State<T> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(keep_alive: DropOrderVec<ComPtrRefGuard>) -> Self {
         Self {
             waker: AtomicWaker::new(),
             done: AtomicBool::new(false),
             claimed: AtomicBool::new(false),
             result: Mutex::new(None),
+            _keep_alive: Held(keep_alive),
         }
     }
 }
+
+/// A value held only to be dropped: nothing ever reads it.
+struct Held<T>(T);
+// SAFETY: a `&Held` gives no access to what it holds, so sharing one between threads
+// shares nothing — only moving it does, which `T: Send` permits.
+unsafe impl<T: Send> Sync for Held<T> {}
 
 /// A `'static` future awaiting one asynchronous BMD job (read / decode / process
 /// / prepare-pipeline) completion callback.
 ///
 /// # Ownership & lifetime
-/// The SDK co-owns the callback `State` via an owned refcount handed out at
-/// construction (see `State` and [`CallbackFuture::create_from_job`]). This is
-/// what makes the future `'static` and safe to drop early.
+/// The SDK co-owns the state the job completes into, which also holds everything
+/// the job uses, until its completion callback has run. This is what makes the
+/// future `'static` and safe to drop at any time.
 ///
 /// # Cancellation semantics
-/// This type has **no** `Drop` impl that aborts the job. Dropping a *pending*
-/// future therefore does **not** cancel the underlying job: the job runs to
-/// completion, its buffers are reclaimed by the (still-armed) completion
-/// callback, and the produced value is discarded. To cancel, call
-/// [`abort()`](CallbackFuture::abort) (best-effort) and then still drive the
-/// future to completion by awaiting it — never rely on drop for cancellation.
+/// Dropping a *pending* future does **not** cancel the job: the job runs to
+/// completion, keeping what it uses alive meanwhile, and its result is discarded.
+/// To cancel, call [`abort()`](CallbackFuture::abort) (best-effort); the future then
+/// completes, with [`BrawError::Abort`] if the job was aborted in time.
 pub struct CallbackFuture<T> {
     pub(crate) state: Arc<State<T>>,
     pub(crate) job: Option<ComPtr<IBlackmagicRawJob>>,
@@ -91,17 +100,24 @@ impl<T> CallbackFuture<T> {
     /// Request the SDK abort this in-flight job. **Best-effort**: per the BMD
     /// SDK manual, `Abort` "CAN fail if the job has already been started by
     /// the internal decoder", and the job still delivers exactly one
-    /// completion callback. So after `abort()` you must still drive the
-    /// future to completion (await it) to reclaim its buffers — do not just
-    /// drop it. No-op for futures with no job (e.g. `prepare_pipeline`).
+    /// completion callback — so the future still completes, with the job's
+    /// result if the abort came too late. No-op for futures with no job (e.g.
+    /// `prepare_pipeline`).
     pub fn abort(&self) {
         if let Some(job) = &self.job {
-            let _ = job.Abort();
+            // SAFETY: `Abort` takes no arguments.
+            let _ = unsafe { job.Abort() };
         }
     }
 
-    pub fn create_from_job(job: ComPtr<IBlackmagicRawJob>, hints: &[ReadJobHints]) -> Result<Self, BrawError> {
-        let state = Arc::new(State::new());
+    /// Submit `job`, with `hints` applied, and return the future of its completion.
+    /// `keep_alive` holds everything the job uses until it has completed.
+    ///
+    /// # Safety
+    /// `job` must be a new, unsubmitted job whose completion callback — the codec's
+    /// `DefaultCallback` — delivers a `T`.
+    pub(crate) unsafe fn create_from_job(job: ComPtr<IBlackmagicRawJob>, hints: &[ReadJobHints], keep_alive: DropOrderVec<ComPtrRefGuard>) -> Result<Self, BrawError> {
+        let state = Arc::new(State::new(keep_alive));
 
         // Hand the SDK an *owned* refcount (reclaimed in `deliver_completion`
         // via `Arc::from_raw`). This keeps `State` alive even if the future is
@@ -112,28 +128,31 @@ impl<T> CallbackFuture<T> {
         // If any step below fails the job is never (successfully) submitted,
         // so no callback will fire — reclaim the refcount to avoid leaking.
         let setup = (|| -> Result<(), BrawError> {
-            job.SetUserData(raw)?;
-
-            if !hints.is_empty() {
-                let mut ptr = std::ptr::null_mut();
-                let hr = unsafe { ((*job.vtbl).parent.QueryInterface)(job.as_raw() as _, IBlackmagicRawReadJobHints::iid(), &mut ptr) };
-                check_hr(hr)?;
-                let hints_com = ComPtr::new(ptr as *mut IBlackmagicRawReadJobHints)?;
-                for hint in hints {
-                    match hint {
-                        ReadJobHints::None => {},
-                        ReadJobHints::Scale(scale) => {
-                            hints_com.SetReaderResolutionScale(*scale)?;
+            // SAFETY: the user data is the `State<T>` the callback expects (per this
+            // function's contract), and the hints are safe values.
+            unsafe {
+                job.SetUserData(raw)?;
+                if !hints.is_empty() {
+                    let hints_com = job.query_interface::<IBlackmagicRawReadJobHints>()?;
+                    for hint in hints {
+                        match hint {
+                            ReadJobHints::None => {},
+                            ReadJobHints::Scale(scale) => {
+                                hints_com.SetReaderResolutionScale(*scale)?;
+                            }
                         }
                     }
                 }
+                job.Submit()?;
             }
-
-            job.Submit()?;
             Ok(())
         })();
 
         if let Err(e) = setup {
+            // The job is released before the state, and with it what the job was
+            // given: an unsubmitted job never touches it.
+            drop(job);
+            // SAFETY: the `into_raw` above, which no submitted job holds.
             unsafe { drop(Arc::from_raw(raw as *const State<T>)); }
             return Err(e);
         }
@@ -151,12 +170,12 @@ impl<T> CallbackFuture<T> {
 /// `IBlackmagicRawFrame` in the public [`BlackmagicRawFrame`] using the
 /// captured `factory` + parent COM keep-alives. `Unpin`.
 ///
-/// Cancellation is `abort()` + await — never drop a pending future (see
-/// [`CallbackFuture`] for the ownership / cancellation contract).
+/// See [`CallbackFuture`] for the ownership and cancellation contract.
 pub struct ReadFrameFuture {
     inner:         CallbackFuture<ComPtr<IBlackmagicRawFrame>>,
-    factory:       Factory,
     parent_guards: DropOrderVec<ComPtrRefGuard>,
+    // Last, as in every object: the SDK's factory outlives what is made from it.
+    factory:       Factory,
 }
 // SAFETY: `Send` only — moving the future (and thus the frame handle + its
 // keep-alives) to another thread is sound under BMD's free-threaded model.
@@ -172,7 +191,6 @@ impl ReadFrameFuture {
         Self { inner, factory, parent_guards }
     }
     /// Best-effort abort of the in-flight read (see [`CallbackFuture::abort`]).
-    /// Drive the future to completion afterwards — do not drop it.
     pub fn abort(&self) { self.inner.abort(); }
 }
 impl Future for ReadFrameFuture {
@@ -196,8 +214,9 @@ impl Future for ReadFrameFuture {
 /// See [`ReadFrameFuture`] for the ownership / cancellation contract.
 pub struct DecodeProcessFuture {
     inner:         CallbackFuture<ComPtr<IBlackmagicRawProcessedImage>>,
-    factory:       Factory,
     parent_guards: DropOrderVec<ComPtrRefGuard>,
+    // Last, as in `ReadFrameFuture`.
+    factory:       Factory,
 }
 // SAFETY: `Send` only, for the same reasons as [`ReadFrameFuture`]: sending the
 // processed-image handle + its keep-alives across threads is sound, but the
@@ -212,7 +231,6 @@ impl DecodeProcessFuture {
         Self { inner, factory, parent_guards }
     }
     /// Best-effort abort of the in-flight decode (see [`CallbackFuture::abort`]).
-    /// Drive the future to completion afterwards — do not drop it.
     pub fn abort(&self) { self.inner.abort(); }
 }
 impl Future for DecodeProcessFuture {
@@ -238,7 +256,7 @@ impl Future for DecodeProcessFuture {
 /// construction — which may allocate, `AddRef`, or otherwise panic — runs
 /// inside the panic firewall of [`deliver_completion`], guaranteeing the
 /// claim-once and refcount reclaim still happen and nothing unwinds across the
-/// C++ ABI boundary (R15).
+/// C++ ABI boundary.
 pub(crate) fn callback_complete<T>(job: *mut IBlackmagicRawJob, make_result: impl FnOnce() -> Result<T, BrawError>) {
     if job.is_null() {
         log::error!("BRAW completion callback delivered a null job pointer; ignoring");
@@ -277,7 +295,7 @@ pub(crate) fn callback_complete<T>(job: *mut IBlackmagicRawJob, make_result: imp
 ///    `make_result` — so the refcount is balanced exactly once and can never be
 ///    double-freed.
 ///
-/// # Panic firewall (R15)
+/// # Panic firewall
 /// `make_result` runs inside `catch_unwind`. A panic there is logged, mapped to
 /// a [`BrawError::Other`] result (so the awaiting future resolves to an error
 /// instead of hanging), and never unwinds across the FFI boundary. The refcount
@@ -318,7 +336,7 @@ pub(crate) fn deliver_completion<T>(ud: *mut c_void, make_result: impl FnOnce() 
     // pairing the single `into_raw` handed to the SDK at submission.
     let permanent: Arc<State<T>> = unsafe { Arc::from_raw(ptr) };
 
-    // Build the result behind the panic firewall (R15): a panic must not cross
+    // Build the result behind the panic firewall: a panic must not cross
     // the C++ ABI boundary, and must still leave the future woken (with an
     // error) rather than hung.
     let result = match catch_unwind(AssertUnwindSafe(make_result)) {
@@ -358,7 +376,7 @@ mod tests {
     #[test]
     fn drop_before_callback_is_uaf_free_and_frees_once() {
         let freed = Arc::new(AtomicUsize::new(0));
-        let state = Arc::new(State::<DropProbe>::new());
+        let state = Arc::new(State::<DropProbe>::new(vec![].into()));
         let ud = Arc::into_raw(state.clone()) as *mut c_void; // SDK's owned ref
 
         // Caller drops the future before the callback fires (e.g. a seek).
@@ -371,13 +389,44 @@ mod tests {
         assert_eq!(freed.load(Ordering::SeqCst), 1, "state + result freed exactly once");
     }
 
+    /// What a job uses is released only once both the job has completed and its
+    /// future is gone — in either order.
+    #[test]
+    fn the_job_keeps_what_it_uses_until_it_completes_and_its_future_is_gone() {
+        struct Counted(Vec<u8>, Arc<AtomicUsize>);
+        impl AsMut<[u8]> for Counted {
+            fn as_mut(&mut self) -> &mut [u8] { &mut self.0 }
+        }
+        impl Drop for Counted {
+            fn drop(&mut self) { self.1.fetch_add(1, Ordering::SeqCst); }
+        }
+        for future_first in [true, false] {
+            let released = Arc::new(AtomicUsize::new(0));
+            let (ptr, len, guard) = sdk_buffer(Counted(vec![0; 4], released.clone()));
+            let state = Arc::new(State::<()>::new(vec![guard].into()));
+            let ud = Arc::into_raw(state.clone()) as *mut c_void;
+            if future_first {
+                drop(state);
+                // The job is still running: it may still write to its buffer.
+                assert_eq!(released.load(Ordering::SeqCst), 0);
+                unsafe { std::ptr::write_bytes(ptr, 1, len) };
+                deliver_completion::<()>(ud, || Ok(()));
+            } else {
+                deliver_completion::<()>(ud, || Ok(()));
+                assert_eq!(released.load(Ordering::SeqCst), 0, "the future still holds it");
+                drop(state);
+            }
+            assert_eq!(released.load(Ordering::SeqCst), 1);
+        }
+    }
+
     /// A second / spurious callback for the same job is a safe no-op: the
     /// result is built exactly once and the state is freed exactly once.
     #[test]
     fn double_callback_claims_once() {
         let freed  = Arc::new(AtomicUsize::new(0));
         let builds = Arc::new(AtomicUsize::new(0));
-        let state  = Arc::new(State::<DropProbe>::new());
+        let state  = Arc::new(State::<DropProbe>::new(vec![].into()));
         let ud = Arc::into_raw(state.clone()) as *mut c_void;
 
         // First (winning) callback: builds the result once. `state` (the
@@ -407,7 +456,7 @@ mod tests {
     /// future, and surface as an error result.
     #[test]
     fn panicking_result_construction_is_contained() {
-        let state = Arc::new(State::<()>::new());
+        let state = Arc::new(State::<()>::new(vec![].into()));
         let ud = Arc::into_raw(state.clone()) as *mut c_void;
 
         // Silence the default panic hook so the deliberately-panicking closure
@@ -428,7 +477,7 @@ mod tests {
     /// safe no-op.
     #[test]
     fn abort_is_noop_without_job() {
-        let fut: CallbackFuture<()> = CallbackFuture { state: Arc::new(State::new()), job: None };
+        let fut: CallbackFuture<()> = CallbackFuture { state: Arc::new(State::new(vec![].into())), job: None };
         fut.abort();
     }
 }

@@ -138,6 +138,7 @@ pub struct BytesFile<B> {
 }
 
 impl<B: AsRef<[u8]> + Send + Sync + 'static> BytesFile<B> {
+    /// A file called `name` holding `bytes`.
     pub fn new(name: impl Into<String>, bytes: B) -> Self {
         Self { name: name.into(), bytes }
     }
@@ -232,6 +233,7 @@ pub struct FileSet {
 }
 
 impl FileSet {
+    /// An empty set.
     pub fn new() -> Self { Self::default() }
 
     /// Add `file` under its [`name`](BrawFile::name), returning the file it replaced.
@@ -702,7 +704,7 @@ mod tests {
         // GetFilesystem hands out a reference to the filesystem; a companion opened
         // through it holds another.
         let mut filesystem = std::ptr::null_mut();
-        file.raw.GetFilesystem(&mut filesystem).unwrap();
+        unsafe { file.raw.GetFilesystem(&mut filesystem) }.unwrap();
         let mut companion = std::ptr::null_mut();
         unsafe {
             let open = (*(*filesystem).vtbl).OpenCompanionFile;
@@ -732,7 +734,7 @@ mod tests {
         let mut buffers = vec![vec![0u8; 4], vec![0u8; 0], vec![0u8; 8]];
         let mut vecs = io_vecs(&mut buffers);
         let mut read = u64::MAX;
-        file.raw.ReadV(vecs.as_mut_ptr(), vecs.len() as u32, 1, &mut read).unwrap();
+        unsafe { file.raw.ReadV(vecs.as_mut_ptr(), vecs.len() as u32, 1, &mut read) }.unwrap();
         assert_eq!(read, 9);
         assert_eq!(buffers, [vec![1, 2, 3, 4], vec![], vec![5, 6, 7, 8, 9, 0, 0, 0]]);
     }
@@ -744,7 +746,7 @@ mod tests {
         let mut buffers = vec![vec![0u8; 4], vec![0u8; 4]];
         let mut vecs = io_vecs(&mut buffers);
         let mut read = u64::MAX;
-        assert!(file.raw.ReadV(vecs.as_mut_ptr(), vecs.len() as u32, 0, &mut read).is_err());
+        assert!(unsafe { file.raw.ReadV(vecs.as_mut_ptr(), vecs.len() as u32, 0, &mut read) }.is_err());
         assert_eq!(read, 6, "the count covers the bytes read before the failure");
         assert_eq!(buffers, [vec![0, 1, 2, 3], vec![4, 5, 0, 0]]);
     }
@@ -757,7 +759,7 @@ mod tests {
         let mut buffers = vec![vec![1u8; 4], vec![2u8; 4]];
         let mut vecs = io_vecs(&mut buffers);
         let mut written = u64::MAX;
-        assert!(file.raw.WriteV(vecs.as_mut_ptr(), vecs.len() as u32, 0, &mut written).is_err());
+        assert!(unsafe { file.raw.WriteV(vecs.as_mut_ptr(), vecs.len() as u32, 0, &mut written) }.is_err());
         assert_eq!(written, 6, "the count covers the bytes written before the failure");
         assert_eq!(*probe.data.read().unwrap(), [1, 1, 1, 1, 2, 2]);
     }
@@ -797,10 +799,10 @@ mod tests {
         let mut buffers = vec![vec![0u8; 8]];
         let mut vecs = io_vecs(&mut buffers);
         let mut count = u64::MAX;
-        assert!(file.raw.ReadV(vecs.as_mut_ptr(), 1, 0, &mut count).is_err());
+        assert!(unsafe { file.raw.ReadV(vecs.as_mut_ptr(), 1, 0, &mut count) }.is_err());
         assert_eq!(count, 0);
         count = u64::MAX;
-        assert!(file.raw.WriteV(vecs.as_mut_ptr(), 1, 0, &mut count).is_err());
+        assert!(unsafe { file.raw.WriteV(vecs.as_mut_ptr(), 1, 0, &mut count) }.is_err());
         assert_eq!(count, 0);
     }
 
@@ -810,7 +812,7 @@ mod tests {
         let file = BlackmagicRawFile::standalone(Probe::new(vec![0; 4], u64::MAX, &drops));
         let mut vecs = [BmdIoVec { iov_base: std::ptr::null_mut(), iov_len: 4 }];
         let mut read = u64::MAX;
-        assert!(file.raw.ReadV(vecs.as_mut_ptr(), 1, 0, &mut read).is_err());
+        assert!(unsafe { file.raw.ReadV(vecs.as_mut_ptr(), 1, 0, &mut read) }.is_err());
         assert_eq!(read, 0);
     }
 }

@@ -6,11 +6,10 @@
 //! bit-for-bit — including the sidecar resolved as a companion file, concurrent
 //! read jobs, and the clip keeping its file alive.
 //!
-//! Requires the Blackmagic RAW SDK in `sdk/` (Windows) or the `.so` set at the repo
-//! root (Linux — put the repo root on `LD_LIBRARY_PATH` so the SDK finds its
-//! decoder plugins). The decode is CPU-only, so it runs headless. Hashes are
-//! compared against the path-opened decode on the same platform, never across
-//! platforms.
+//! Requires the Blackmagic RAW SDK (see `tests/common`; on Linux, also put
+//! `Linux/Libraries` on `LD_LIBRARY_PATH` so the SDK finds its decoder plugins).
+//! The decode is CPU-only, so it runs headless. Hashes are compared against the
+//! path-opened decode on the same platform, never across platforms.
 
 mod common;
 

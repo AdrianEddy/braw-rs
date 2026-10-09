@@ -1,11 +1,14 @@
 # braw-rs - Safe, modern Rust bindings for the Blackmagic RAW SDK
 
-Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no bindgen, no ffi, just idiomatic Rust.
+Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no bindgen, no C++ shim, just idiomatic Rust.
 
 <p align="center">
-  <a href="#"><img alt="License: MIT/Apache-2.0" src="https://img.shields.io/badge/license-MIT%2FApache--2.0-informational"></a>
-  <a href="#"><img alt="Rust Edition" src="https://img.shields.io/badge/rust-Edition_2024-blue"></a>
-  <a href="#"><img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20iOS-success"></a>
+  <a href="https://crates.io/crates/braw"><img alt="crates.io" src="https://img.shields.io/crates/v/braw.svg"></a>
+  <a href="https://docs.rs/braw"><img alt="docs.rs" src="https://img.shields.io/docsrs/braw"></a>
+  <a href="https://github.com/AdrianEddy/braw-rs/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AdrianEddy/braw-rs/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="#license"><img alt="License: MIT/Apache-2.0" src="https://img.shields.io/badge/license-MIT%2FApache--2.0-informational"></a>
+  <a href="#requirements"><img alt="MSRV" src="https://img.shields.io/badge/rustc-1.88+-blue"></a>
+  <a href="#requirements"><img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20iOS-success"></a>
 </p>
 
 ## Highlights
@@ -21,7 +24,7 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 * **Cross-platform**: Windows (x64 and ARM64), Linux, macOS, and iOS.
 * **Custom file I/O**: decode — and write — `.braw` clips from memory, `Read + Seek` streams, or any byte source you implement (network, encrypted, …) without ever touching disk.
 
-**Based on Blackmagic RAW SDK 6.0**, which it requires: a library of another version is refused with `BrawError::UnsupportedSdkVersion` rather than called through a mismatched interface.
+**Based on Blackmagic RAW SDK 6.0**, which it requires: a library whose codec interface differs from 6.0's — any older one, or a newer one that changes it — is refused with `BrawError::UnsupportedSdkVersion` rather than called through a mismatched interface.
 
 ---
 
@@ -29,20 +32,25 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 
 ### Requirements
 
-* Install **Blackmagic RAW SDK** for your platform.
+* Rust **1.88** or newer.
+* The [**Blackmagic RAW SDK**](https://www.blackmagicdesign.com/developer/products/braw/sdk-and-software) **6.0** for your platform.
 * Ensure the SDK library is discoverable at runtime:
 
   * **Windows**: `BlackmagicRawAPI.dll` in the executable dir or on `PATH` — from `Win/Libraries` for x64 builds, `Win/Libraries/ARM64` for ARM64 builds (CPU and OpenCL pipelines; the SDK ships no CUDA decoder for ARM64).
   * **Linux**: `libBlackmagicRawAPI.so` on `LD_LIBRARY_PATH` or `rpath`.
-  * **macOS/iOS**: `BlackmagicRawAPI.framework` in `@rpath` or `Frameworks`.
+  * **macOS/iOS**: `BlackmagicRawAPI.framework`. `default_library_name()` is a relative path, which `dlopen` resolves through `DYLD_FRAMEWORK_PATH`, the working directory, then `~/Library/Frameworks` and `/Library/Frameworks` — not `@rpath`. For a framework bundled in your app, pass its full path (e.g. `…/Contents/Frameworks/BlackmagicRawAPI.framework/BlackmagicRawAPI`) to `Factory::load_from`.
 
 ### Cargo
 
 ```toml
 [dependencies]
 braw = "0.1"
-pollster = "0.3" # optional, for simple blocking
+pollster = "1" # optional, for simple blocking
 ```
+
+### Features
+
+* `serde` *(default)*: implements `serde::Serialize` for `VariantValue`, so clip and frame metadata can be serialized directly.
 
 ---
 
@@ -105,6 +113,21 @@ This crate **does not link** to the SDK at build time. At runtime it uses `liblo
 
 * Your app can start even if the SDK isn’t present, and you can show a friendly error.
 * You can ship a single binary and place the SDK library alongside it or bundle it per-platform.
+
+Once loaded, the library stays loaded until the process exits: the SDK's worker threads may still be running its code after every object is gone.
+
+---
+
+## Safety
+
+The safe API upholds Rust's guarantees by itself, including where the SDK keeps raw pointers without holding a reference:
+
+* **Objects** keep alive what they were created from: a frame its clip, a clip its codec and its file.
+* **Jobs** keep alive everything they use until they complete, whether or not their future is still around: dropping a pending future never frees memory a job is still writing.
+* **Bitstream buffers** a frame is read into are owned by the frame and by every job that decodes it. A `BitStreamBuffer` has the alignment the SDK requires.
+* **Pipeline devices** a codec is configured with, or prepared for, are kept until the codec's destruction has finished: the SDK frees GPU resources made on a device's context at the very end of it.
+
+The raw COM layer — the `raw` field of every object, and `ComPtr`'s methods, one per SDK method — is `unsafe`: its callers uphold the SDK's contracts. So are the few methods that take GPU handles or resources, which Rust cannot check: `BlackmagicRawConfiguration::set_pipeline`, `BlackmagicRaw::prepare_pipeline`, `BlackmagicRawPost3DLUT::resource_gpu`, and the methods of `BlackmagicRawResourceManager`. Prefer the device-based equivalents, which are safe; with your own GPU context, pass whatever owns it to `BlackmagicRaw::keep_alive`, which holds it until the codec's destruction has finished.
 
 ---
 
@@ -214,13 +237,13 @@ BRAW SDK is based on the C++ COM object model. If we want to use bindgen we'd ne
 Yes. Use `pollster::block_on` or your runtime’s `block_on`.
 
 **Can I use my own callback?**
-Yes. Use `codec.set_callback()` and implement `BrawCallback` for your type.
+Yes. Implement `BrawCallback` for your type and pass it to `codec.set_callback()`. It sees the codec's jobs as they finish, alongside the futures, which complete as usual.
 
 **Can I decode a clip that isn't on disk (in memory, over the network, encrypted)?**
 Yes — see [Custom file I/O](#custom-file-io).
 
 **Which SDK version is supported?**
-**6.0**. `Factory::create_codec` refuses a library of another version with `BrawError::UnsupportedSdkVersion`, naming the version it found: SDK 6.0 changed interfaces in place, so older libraries cannot be driven by these bindings — nor can a later one that changes them again.
+**6.0**. SDK 6.0 changed interfaces in place, so older libraries cannot be driven by these bindings — nor can a later one that changes them again. `Factory::create_codec` checks the codec's interface ID, which changes along with its layout, and refuses a library whose codec is not 6.0's with `BrawError::UnsupportedSdkVersion`, naming the version it found.
 
 ---
 
@@ -232,8 +255,18 @@ Yes — see [Custom file I/O](#custom-file-io).
 
 ---
 
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](https://github.com/AdrianEddy/braw-rs/blob/main/CONTRIBUTING.md) for how to run the test suite against the SDK, and [CHANGELOG.md](https://github.com/AdrianEddy/braw-rs/blob/main/CHANGELOG.md) for what changed in each release.
+
+---
+
 ## License
 
 Dual-licensed under **MIT** or **Apache-2.0** at your option.
 
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+
 > Note: Blackmagic RAW SDK is distributed under its own license/EULA. You must comply with Blackmagic Design’s terms when downloading and redistributing the SDK binaries.
+
+This is an independent project, not affiliated with or endorsed by Blackmagic Design. Blackmagic Design and Blackmagic RAW are trademarks of Blackmagic Design Pty. Ltd.

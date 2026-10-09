@@ -4,17 +4,39 @@
 use super::*;
 use core::ffi::c_void;
 use std::marker::PhantomData;
+use std::sync::{ Arc, PoisonError, RwLock };
 
+/// Notifications for a codec's jobs, set with [`BlackmagicRaw::set_callback`].
+///
+/// The futures this crate returns already deliver every job's result; implement
+/// this to observe jobs as they finish, or for the notifications no future carries
+/// (trim progress, sidecar parse problems). Each method defaults to doing nothing.
+///
+/// The SDK calls these from its worker threads, concurrently — a callback being
+/// replaced may still be running, or about to run, when `set_callback` returns. The
+/// SDK keeps the codec's callback alive until the codec is gone, so a callback that
+/// holds the codec, or anything opened from it, keeps both alive forever.
 #[allow(unused_variables)]
-pub trait BrawCallback: Send + 'static {
+pub trait BrawCallback: Send + Sync + 'static {
+    /// A read-frame job finished.
     fn read_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) { }
+    /// A read-audio job finished.
     fn read_audio_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, audio_buffer: *mut IBlackmagicRawAudioBuffer) { }
+    /// A manual decoder's decode job finished.
     fn decode_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) { }
+    /// A decode-and-process job finished.
     fn process_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) { }
+    /// A trim job reported its progress.
     fn trim_progress(&self, job: *mut IBlackmagicRawJob, progress: f32) { }
+    /// A trim job finished.
     fn trim_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) { }
-    fn sidecar_metadata_parse_warning(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) { } // offending line will be ignored
-    fn sidecar_metadata_parse_error(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) { }   // entire file will be ignored
+    /// A line of a `.sidecar` file failed to parse; the line is ignored.
+    fn sidecar_metadata_parse_warning(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) { }
+    /// A `.sidecar` file failed to parse; the whole file is ignored.
+    fn sidecar_metadata_parse_error(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) { }
+    /// A pipeline preparation finished. `user_data` belongs to the future
+    /// [`prepare_pipeline`](BlackmagicRaw::prepare_pipeline) returned and may already
+    /// be freed: compare it, never dereference it.
     fn prepare_pipeline_complete(&self, user_data: *mut c_void, result: HRESULT) { }
 }
 
@@ -83,66 +105,90 @@ pub(crate) struct CallbackHandle<T: BrawCallback> {
     raw: ComPtr<IBlackmagicRawCallback>,
     _state: PhantomData<T>,
 }
+// SAFETY: the handle is one reference to an object whose count is atomic and whose
+// state, a `Send + Sync` `T`, is only ever reached through `&T`.
+unsafe impl<T: BrawCallback> Send for CallbackHandle<T> {}
+// SAFETY: as above.
+unsafe impl<T: BrawCallback> Sync for CallbackHandle<T> {}
 impl<T: BrawCallback> CallbackHandle<T> {
     pub fn new(state: T) -> Self {
         Self { raw: ComObject::create(Callback(state)), _state: PhantomData }
     }
     pub fn as_mut_ptr(&self) -> *mut IBlackmagicRawCallback { self.raw.as_raw() }
-    /// The callback state. Writing through it races any callback an SDK thread is
-    /// running.
-    pub fn state_ptr(&self) -> *mut T {
+    /// The callback state, which SDK threads may be reading concurrently.
+    pub fn state(&self) -> &T {
         // SAFETY: the handle's reference keeps the object alive.
-        unsafe { &raw mut (*(self.raw.as_raw() as *mut ComObject<Callback<T>>)).state.0 }
+        &unsafe { ComObject::<Callback<T>>::state(self.raw.as_raw().cast()) }.0
     }
+    /// A reference that keeps the callback alive for as long as the guard lives.
+    pub fn add_ref_and_get_guard(&self) -> ComPtrRefGuard { self.raw.add_ref_and_get_guard() }
 }
 
+/// The callback each codec is created with: it completes the job futures, then
+/// forwards to the [`BrawCallback`] set on the codec, if any.
 #[derive(Default)]
 pub(crate) struct DefaultCallback {
-    pub user_callback: Option<Box<dyn BrawCallback>>,
+    user_callback: RwLock<Option<Arc<dyn BrawCallback>>>,
+}
+
+impl DefaultCallback {
+    pub fn set_user_callback(&self, callback: Option<Arc<dyn BrawCallback>>) {
+        let previous = std::mem::replace(&mut *self.user_callback.write().unwrap_or_else(PoisonError::into_inner), callback);
+        // Dropped after the lock is released: its `Drop` is user code, which may set
+        // another callback.
+        drop(previous);
+    }
+    /// The callback set on the codec. The lock is not held while it runs, so it may
+    /// replace itself.
+    fn user(&self) -> Option<Arc<dyn BrawCallback>> {
+        self.user_callback.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
 }
 
 impl BrawCallback for DefaultCallback {
     fn read_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, frame: *mut IBlackmagicRawFrame) {
         // Result construction (`AddRef`) is deferred into a closure so it runs
-        // inside `callback_complete`'s panic firewall (R15).
+        // inside `callback_complete`'s panic firewall. SAFETY (here and below): the
+        // SDK passes a live interface, which stays its own; the future gets a new
+        // reference.
         callback_complete(job, move || if result == S_OK {
-            ComPtr::new(frame).map(|mut x| unsafe { x.add_ref(); x })
+            unsafe { ComPtr::add_ref_from(frame) } // SAFETY: see above
         } else {
             check_hr(result).map(|_| unreachable!())
         });
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.read_complete(job, result, frame);
         }
     }
     fn read_audio_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, audio_buffer: *mut IBlackmagicRawAudioBuffer) {
         callback_complete(job, move || if result == S_OK {
-            ComPtr::new(audio_buffer).map(|mut x| unsafe { x.add_ref(); x })
+            unsafe { ComPtr::add_ref_from(audio_buffer) } // SAFETY: see above
         } else {
             check_hr(result).map(|_| unreachable!())
         });
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.read_audio_complete(job, result, audio_buffer);
         }
     }
     fn decode_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) {
         callback_complete(job, move || check_hr(result).map(|_| ()));
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.decode_complete(job, result);
         }
     }
     fn process_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT, processed_image: *mut IBlackmagicRawProcessedImage) {
         callback_complete(job, move || if result == S_OK {
-            ComPtr::new(processed_image).map(|mut x| unsafe { x.add_ref(); x })
+            unsafe { ComPtr::add_ref_from(processed_image) } // SAFETY: see above
         } else {
             check_hr(result).map(|_| unreachable!())
         });
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.process_complete(job, result, processed_image);
         }
     }
     fn trim_complete(&self, job: *mut IBlackmagicRawJob, result: HRESULT) {
         callback_complete(job, move || check_hr(result).map(|_| ()));
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.trim_complete(job, result);
         }
     }
@@ -152,22 +198,22 @@ impl BrawCallback for DefaultCallback {
         // — an SDK contract violation, since it was handed a non-null pointer —
         // is logged and treated as a no-op inside `deliver_completion`.
         deliver_completion::<()>(user_data, move || check_hr(result).map(|_| ()));
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.prepare_pipeline_complete(user_data, result);
         }
     }
     fn trim_progress(&self, job: *mut IBlackmagicRawJob, progress: f32) {
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.trim_progress(job, progress);
         }
     }
     fn sidecar_metadata_parse_warning(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) {
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.sidecar_metadata_parse_warning(clip, file_name, line_number, info);
         }
     }
     fn sidecar_metadata_parse_error(&self, clip: *mut IBlackmagicRawClip, file_name: String, line_number: u32, info: String) {
-        if let Some(cb) = &self.user_callback {
+        if let Some(cb) = self.user() {
             cb.sidecar_metadata_parse_error(clip, file_name, line_number, info);
         }
     }
@@ -198,5 +244,24 @@ mod tests {
         unsafe { ((*(*raw).vtbl).TrimProgress)(raw.cast(), std::ptr::null_mut(), 0.5) };
         assert_eq!(unsafe { ((*(*raw).vtbl).parent.Release)(raw.cast()) }, 0);
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    struct CountingProgress(Arc<AtomicUsize>);
+    impl BrawCallback for CountingProgress {
+        fn trim_progress(&self, _job: *mut IBlackmagicRawJob, _progress: f32) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    #[test]
+    fn a_codec_callback_forwards_to_the_one_set_until_it_is_replaced() {
+        let handle = CallbackHandle::new(DefaultCallback::default());
+        let raw = handle.as_mut_ptr();
+        let progress = |p| unsafe { ((*(*raw).vtbl).TrimProgress)(raw.cast(), std::ptr::null_mut(), p) };
+        progress(0.0); // none set yet
+        let (first, second) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        handle.state().set_user_callback(Some(Arc::new(CountingProgress(first.clone()))));
+        progress(0.5);
+        handle.state().set_user_callback(Some(Arc::new(CountingProgress(second.clone()))));
+        progress(1.0);
+        assert_eq!((first.load(Ordering::SeqCst), second.load(Ordering::SeqCst)), (1, 1));
     }
 }

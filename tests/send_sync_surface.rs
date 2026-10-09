@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright © 2025 Adrian <adrian.eddy at gmail>
 
-//! Compile-only proof that the per-interface Send / Sync classification
-//! in `src/send_sync.rs` matches the audit table in stage-6c.md
-//! § 6c.0.2. Any future refactor that accidentally adds a blanket
-//! `unsafe impl<T> Send + Sync for ComPtr<T>` would silently re-enable
-//! Sync on the Send-only interfaces — the `assert_not_impl_all!` lines
+//! Compile-only proof of the per-interface `Send` / `Sync` classification
+//! documented in `src/sdk.rs` ("Thread-safety"). A refactor that added a
+//! blanket `unsafe impl<T> Send + Sync for ComPtr<T>` would silently make
+//! the `Send`-only interfaces `Sync` — the `assert_not_impl_all!` lines
 //! below catch that immediately.
 
 use braw::*;
@@ -65,7 +64,6 @@ fn stateful_interfaces_are_send_only() {
     assert_impl_all!(BlackmagicRawFrame:                        Send);
     assert_impl_all!(BlackmagicRawFrameEx:                      Send);
     assert_impl_all!(BlackmagicRawFrameMultiVideo:              Send);
-    assert_impl_all!(BlackmagicRawJob:                          Send);
     assert_impl_all!(BlackmagicRawConfiguration:                Send);
     assert_impl_all!(BlackmagicRawConfigurationEx:              Send);
     assert_impl_all!(BlackmagicRawResourceManager:              Send);
@@ -75,7 +73,6 @@ fn stateful_interfaces_are_send_only() {
     assert_impl_all!(BlackmagicRawClipProcessingAttributes:     Send);
     assert_impl_all!(BlackmagicRawFrameProcessingAttributes:    Send);
     assert_impl_all!(BlackmagicRawClipGeometry:                 Send);
-    assert_impl_all!(BlackmagicRawReadJobHints:                 Send);
 
     // Iterators — cursor state.
     assert_impl_all!(BlackmagicRawPipelineIterator:             Send);
@@ -99,7 +96,6 @@ fn stateful_interfaces_are_not_sync() {
     assert_not_impl_all!(BlackmagicRaw:                         Sync);
     assert_not_impl_all!(BlackmagicRawClip:                     Sync);
     assert_not_impl_all!(BlackmagicRawFrame:                    Sync);
-    assert_not_impl_all!(BlackmagicRawJob:                      Sync);
     assert_not_impl_all!(BlackmagicRawConfiguration:            Sync);
     assert_not_impl_all!(BlackmagicRawConfigurationEx:          Sync);
     assert_not_impl_all!(BlackmagicRawResourceManager:          Sync);

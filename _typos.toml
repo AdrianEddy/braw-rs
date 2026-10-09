@@ -1,0 +1,5 @@
+[default]
+extend-ignore-re = [
+    # The SDK's FourCC codes, e.g. `/* 'eith' */ 0x65697468`.
+    "/\\* '[^']{4}' \\*/",
+]

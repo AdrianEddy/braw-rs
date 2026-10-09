@@ -1,11 +1,22 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
+//! Print a clip's properties and metadata, and the metadata of its first frame.
+//!
+//! Usage: `cargo run --example read_metadata -- <clip.braw>`
+
 use braw::*;
 
 fn main() -> Result<(), BrawError> {
+    let Some(path) = std::env::args().nth(1) else {
+        eprintln!("usage: read_metadata <clip.braw>");
+        std::process::exit(2);
+    };
     pollster::block_on(async {
         let braw = Factory::load_from(default_library_name())?;
         let codec = braw.create_codec()?;
 
-        let clip = codec.open_clip(&std::env::args().nth(1).unwrap_or_else(|| "E:/A001_06121551_C014.braw".into()))?;
+        let clip = codec.open_clip(&path)?;
 
         println!("--- Clip metadata ---");
         println!("Width:       {}", clip.width()?);

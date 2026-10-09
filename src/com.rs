@@ -10,7 +10,7 @@ use std::sync::atomic::{ fence, AtomicU32, Ordering };
 /// The SDK's COM boolean out-parameter width.
 ///
 /// On Windows the Blackmagic RAW COM ABI declares every `[out]` boolean as
-/// `BOOL*` — a 4-byte `int` (see `sdk/Win/Include/BlackmagicRawAPI.idl`). The
+/// `BOOL*` — a 4-byte `int` (see the SDK's `BlackmagicRawAPI.idl`). The
 /// Mac/Linux C++ interface genuinely uses `bool*` (1 byte). Declaring the
 /// out-parameter as a 1-byte `bool` on Windows lets the DLL's 4-byte store
 /// overrun the adjacent stack slot — e.g. the `arrayElementCount` variable
@@ -20,6 +20,7 @@ use std::sync::atomic::{ fence, AtomicU32, Ordering };
 /// ABI width and narrow to `bool` in Rust.
 #[cfg(windows)]
 pub type SdkBool = i32;
+/// The SDK's COM boolean out-parameter width (see the Windows definition).
 #[cfg(not(windows))]
 pub type SdkBool = bool;
 
@@ -28,19 +29,24 @@ pub type SdkBool = bool;
 #[cfg(windows)]
 #[inline]
 pub fn sdk_bool(v: SdkBool) -> bool { v != 0 }
+/// Narrow an SDK boolean out-parameter (`BOOL` on Windows, `bool` elsewhere) to
+/// a Rust `bool`.
 #[cfg(not(windows))]
 #[inline]
 pub fn sdk_bool(v: SdkBool) -> bool { v }
 
+/// A COM interface identifier, laid out as the platform's SDK expects.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GUID {
-    pub d1: u32,
-    pub d2: u16,
-    pub d3: u16,
-    pub d4: [u8; 8],
+    #[allow(missing_docs)] pub d1: u32,
+    #[allow(missing_docs)] pub d2: u16,
+    #[allow(missing_docs)] pub d3: u16,
+    #[allow(missing_docs)] pub d4: [u8; 8],
 }
 impl GUID {
+    /// The GUID whose canonical `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` form spells
+    /// `bytes` in order.
     pub const fn new(bytes: [u8; 16]) -> Self {
         #[cfg(target_os = "windows")]{
             let d1 = ((bytes[0] as u32) << 24) | ((bytes[1] as u32) << 16) | ((bytes[2] as u32) << 8) | (bytes[3] as u32);
@@ -59,9 +65,12 @@ impl GUID {
     }
 }
 
-// Platform-correct QueryInterface signature: pointer on Windows, by-value REFIID elsewhere
+/// `IUnknown::QueryInterface`: the IID is passed by pointer on Windows and by value
+/// elsewhere.
 #[cfg(target_os = "windows")]
 pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT;
+/// `IUnknown::QueryInterface`: the IID is passed by pointer on Windows and by value
+/// elsewhere.
 #[cfg(not(target_os = "windows"))]
 pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: GUID, ppv: *mut *mut c_void) -> HRESULT;
 
@@ -70,11 +79,13 @@ pub type QueryInterfaceFn = unsafe extern "system" fn(this: *mut c_void, riid: G
 /// LP64 — in the SDK's `LinuxCOM.h`.
 #[cfg(any(target_os = "windows", target_vendor = "apple"))]
 pub type ComUlong = u32;
+/// The COM `ULONG` that `AddRef` / `Release` return (see the Windows definition).
 #[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 pub type ComUlong = core::ffi::c_ulong;
 
+/// The `IUnknown` methods every COM vtable begins with.
 #[repr(C)]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, missing_docs)]
 pub struct IUnknownVTbl {
     pub QueryInterface: QueryInterfaceFn,
     pub AddRef: unsafe extern "system" fn(this: *mut c_void) -> ComUlong,
@@ -87,6 +98,15 @@ pub(crate) type QueryInterfaceRiid = *const GUID;
 #[cfg(not(target_os = "windows"))]
 pub(crate) type QueryInterfaceRiid = GUID;
 
+/// `iid` as `QueryInterface` takes it; on Windows, a pointer valid while `iid` is.
+#[inline]
+pub(crate) fn riid(iid: &GUID) -> QueryInterfaceRiid {
+    #[cfg(target_os = "windows")]
+    { iid }
+    #[cfg(not(target_os = "windows"))]
+    { *iid }
+}
+
 #[inline]
 pub(crate) unsafe fn guid_from_riid(riid: QueryInterfaceRiid) -> GUID {
     #[cfg(target_os = "windows")]
@@ -97,11 +117,108 @@ pub(crate) unsafe fn guid_from_riid(riid: QueryInterfaceRiid) -> GUID {
 
 pub(crate) const IID_IUNKNOWN: GUID = GUID::new([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46]);
 
+/// A value the SDK uses without holding a reference to it — memory it keeps a raw
+/// pointer to, a string — owned by a COM object, so that the keep-alive guards of
+/// everything using it, objects and jobs alike, share it: it goes with the last.
+struct Owned<T>(T);
+
+/// `IUnknown`: the interface of an [`Owned`], which is only ever kept alive.
+#[repr(C)]
+pub(crate) struct IUnknown { vtbl: *const IUnknownVTbl }
+
+// SAFETY: the vtable is the shared `IUnknown` one.
+unsafe impl<T: Send + 'static> ComClass for Owned<T> {
+    type Interface = IUnknown;
+    type VTable = IUnknownVTbl;
+    const IID: GUID = IID_IUNKNOWN;
+    const NAME: &'static str = "IUnknown";
+    const VTABLE: &'static IUnknownVTbl = &ComObject::<Self>::IUNKNOWN;
+}
+
+/// A guard owning `value`, which is dropped with the guard's last clone.
+pub(crate) fn keep_alive<T: Send + 'static>(value: T) -> ComPtrRefGuard {
+    ComObject::create(Owned(value)).add_ref_and_get_guard()
+}
+
+/// How long [`release_before`] waits for the SDK to let go of an object.
+const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Release `object` once the caller's is the last reference to it, so that its
+/// destruction runs, to completion, inside this release; then drop `dependents` —
+/// what the object used without holding a reference to it.
+///
+/// The SDK holds references of its own while it finishes work — a job completing,
+/// a pipeline preparing — so this waits for them to go: inline, or, inside an SDK
+/// call (which the SDK may be waiting on), on a thread of its own. If they outlast
+/// [`RELEASE_TIMEOUT`], `dependents` are leaked rather than dropped before the
+/// object is gone.
+///
+/// # Safety
+/// `object` must be safe to release from any thread.
+pub(crate) unsafe fn release_before<T: 'static, D: Send + 'static>(object: ComPtr<T>, dependents: D) {
+    struct AnyThread<T>(ComPtr<T>);
+    // SAFETY: per this function's contract.
+    unsafe impl<T> Send for AnyThread<T> {}
+    impl<T> AnyThread<T> {
+        fn into_inner(self) -> ComPtr<T> { self.0 }
+    }
+
+    // Leaked, not dropped in some order, if the closure is dropped without running.
+    let parts = std::mem::ManuallyDrop::new((AnyThread(object), dependents));
+    let release = move || {
+        let (object, dependents) = std::mem::ManuallyDrop::into_inner(parts);
+        let object = object.into_inner();
+        let deadline = std::time::Instant::now() + RELEASE_TIMEOUT;
+        while object.other_references() > 0 {
+            if std::time::Instant::now() >= deadline {
+                log::warn!("the SDK still references an object after {RELEASE_TIMEOUT:?}; leaking what it uses rather than releasing that first");
+                std::mem::forget(dependents);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drop(object);
+        drop(dependents);
+    };
+    if !in_sdk_call() {
+        release();
+    } else if let Err(e) = std::thread::Builder::new().name("braw-release".into()).spawn(release) {
+        log::error!("cannot start a thread to release an SDK object ({e}); leaking it and what it uses");
+    }
+}
+
+/// Move `buffer` where the SDK may keep a pointer to its bytes. Returns the bytes,
+/// valid until the last clone of the returned guard is dropped.
+pub(crate) fn sdk_buffer<B: AsMut<[u8]> + Send + 'static>(buffer: B) -> (*mut u8, usize, ComPtrRefGuard) {
+    let object = ComObject::create(Owned(buffer));
+    // SAFETY: `object` is the only reference to the object it just created, so this
+    // is the only access to its state — which, boxed, never moves again.
+    let bytes = unsafe { (*object.as_raw().cast::<ComObject<Owned<B>>>()).state.0.as_mut() };
+    (bytes.as_mut_ptr(), bytes.len(), object.add_ref_and_get_guard())
+}
+
+thread_local! {
+    /// How many calls from the SDK into Rust this thread is inside.
+    static SDK_CALL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread is running Rust code the SDK called — a callback, a file
+/// read — which must not wait for the SDK to finish anything.
+pub(crate) fn in_sdk_call() -> bool {
+    SDK_CALL_DEPTH.with(|depth| depth.get() > 0)
+}
+
 /// Panic firewall for the `extern "system"` COM methods implemented in Rust. A
 /// Rust panic must never unwind across the C++ ABI boundary that invoked us:
 /// catch it, log it, and return an ABI-valid `fallback` instead of unwinding.
 #[inline]
 pub(crate) fn ffi_guard<R>(what: impl std::fmt::Display, fallback: R, f: impl FnOnce() -> R) -> R {
+    struct InSdkCall;
+    impl Drop for InSdkCall {
+        fn drop(&mut self) { SDK_CALL_DEPTH.with(|depth| depth.set(depth.get() - 1)); }
+    }
+    SDK_CALL_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let _in_sdk_call = InSdkCall;
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(v) => v,
         Err(_) => {
@@ -245,8 +362,14 @@ impl<T: ComClass> ComObject<T> {
     }
 }
 
-#[macro_export]
-#[doc(hidden)]
+/// Declare an SDK interface: its vtable, an `unsafe` method per vtable slot on
+/// `ComPtr<I…>`, and — given an `impl` block — the Rust wrapper type with its
+/// safe, idiomatic accessors.
+///
+/// The accessors pass the SDK only what their safe parameter types guarantee valid
+/// (and out-parameters on their own stack), so a method that takes a raw pointer —
+/// memory, a GPU handle — has no place in an `impl` block: write it by hand, as an
+/// `unsafe fn` stating what the pointer must be.
 macro_rules! braw_interface {
     (
         $(#[$meta:meta])*
@@ -284,13 +407,14 @@ macro_rules! braw_interface {
             }
         )?
     ) => {
-        paste::paste! {
+        pastey::paste! {
             $(#[$meta])*
             #[repr(C)]
             #[doc(hidden)]
             pub struct [<I $name>] { pub(crate) vtbl: *const [<I $name VTbl>] }
             #[repr(C)]
             #[doc(hidden)]
+            #[allow(missing_docs)]
             pub struct [<I $name VTbl>] {
                 pub parent: IUnknownVTbl,
 
@@ -298,9 +422,16 @@ macro_rules! braw_interface {
             }
             impl ComPtr<[<I $name>]> {
                 $(
-                #[allow(non_snake_case)]
+                // The raw vtable slots mirror the SDK's signatures.
+                #[allow(non_snake_case, clippy::too_many_arguments)]
                 $(#[$fn_meta])*
-                pub fn $m(&self, $($argn : $argt),*) -> Result<$ret, BrawError> {
+                ///
+                /// # Safety
+                /// The arguments must meet the SDK's contract for this method: each
+                /// pointer valid for the reads and writes the SDK makes through it, for
+                /// as long as it makes them — which, for memory and handles the SDK
+                /// keeps, outlasts the call.
+                pub unsafe fn $m(&self, $($argn : $argt),*) -> Result<$ret, BrawError> {
                     unsafe {
                         let vtbl = &*((*self).vtbl);
                         let hr = (vtbl.$m)(self.as_raw() as *mut _, $($argn),*);
@@ -310,35 +441,38 @@ macro_rules! braw_interface {
                 }
                 )*
             }
-            impl [<I $name>] {
-                pub const IID: GUID = [<IID_I $name>];
-                #[cfg(target_os = "windows")]
-                pub const fn iid() -> &'static GUID { &Self::IID }
-                #[cfg(not(target_os = "windows"))]
-                pub const fn iid() -> GUID { Self::IID }
+            // SAFETY: the vtable layout and IID are the SDK header's (`tests/sdk_layout.rs`).
+            unsafe impl Interface for [<I $name>] {
+                const IID: GUID = [<IID_I $name>];
             }
 
             $(
                 $(#[$implmeta])*
                 pub struct $name {
+                    /// The underlying COM interface.
                     pub raw: ComPtr<[<I $name>]>,
                     $( pub(crate) $field : $field_type, )*
 
                     #[allow(dead_code)]
                     pub(crate) parent_guards: DropOrderVec<ComPtrRefGuard>,
 
-                    // Factory always last, to ensure it outlives all other references
+                    // Factory always last: the SDK's factory outlives every object made from it.
+                    /// The factory this object descends from.
                     pub factory: Factory,
                 }
+                #[allow(clippy::too_many_arguments)] // mirrors the SDK's signatures
                 impl $name {
                     /// Get the raw COM interface pointer
                     pub fn as_raw(&self) -> *mut [<I $name>] { self.raw.as_raw() }
 
+                // SAFETY (each call below): the SDK is passed safe values converted to
+                // their ABI form (see `@iargpass`) and out-parameters on this stack, so
+                // every pointer it receives is valid for as long as it is used.
                 $(
                     $(#[$impl_meta])*
                     pub fn $impl_m(self: $impl_self, $($impl_argn : braw_interface!(@iarg $impl_argt)),*) -> Result<$impl_ret, BrawError> {
                         unsafe {
-                            let mut out: *mut [<I $impl_ret>] = std::mem::zeroed();
+                            let mut out: *mut [<I $impl_ret>] = std::ptr::null_mut();
                             let _hr = self.raw.$impl_cm($(braw_interface!(@iargpass self; $impl_argt,$impl_argn),)* &mut out)?;
                             Ok($impl_ret {
                                 raw: ComPtr::new(out)?,
@@ -352,7 +486,7 @@ macro_rules! braw_interface {
                     $(#[$impls_meta])*
                     pub fn $impls_m(self: $impls_self, $($impls_argn : braw_interface!(@iarg $impls_argt)),*) -> Result<$impls_ret, BrawError> {
                         let mut out: braw_interface!(@iargpassret $impls_ret) = Default::default();
-                        let _hr = self.raw.$impls_cm($(braw_interface!(@iargpass self; $impls_argt,$impls_argn),)* &mut out)?;
+                        let _hr = unsafe { self.raw.$impls_cm($(braw_interface!(@iargpass self; $impls_argt,$impls_argn),)* &mut out)? };
                         Ok(braw_interface!(@iargpassret2 self; $impls_ret,out))
                     }
                 )*
@@ -382,19 +516,14 @@ macro_rules! braw_interface {
                 $(
                     $(#[$implv_meta])*
                     pub fn $implv_m(self: $implv_self, $($implv_argn : braw_interface!(@iarg $implv_argt)),*) -> Result<(), BrawError> {
-                        let _hr = self.raw.$implv_cm($(braw_interface!(@iargpass self; $implv_argt,$implv_argn),)*)?;
+                        let _hr = unsafe { self.raw.$implv_cm($(braw_interface!(@iargpass self; $implv_argt,$implv_argn),)*)? };
                         Ok(())
                     }
                 )*
                 $(
                     $(#[$impli_meta])*
                     pub fn $impli_m(&self) -> Result<$impli_cm, BrawError> {
-                        let mut ptr = std::ptr::null_mut();
-                        let hr = unsafe { ((*self.raw.vtbl).parent.QueryInterface)(self.raw.as_raw() as _, [<I $impli_cm>]::iid(), &mut ptr) };
-                        check_hr(hr)?;
-                        let com = ComPtr::new(ptr as *mut [<I $impli_cm>])?;
-
-                        Ok($impli_cm { raw: com, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
+                        Ok($impli_cm { raw: self.raw.query_interface()?, factory: self.factory.clone(), parent_guards: self.parent_guards.clone_and_add(self.raw.add_ref_and_get_guard()) })
                     }
                 )*
                 }
@@ -429,22 +558,81 @@ macro_rules! braw_interface {
     (@iargpassret2 $self:ident; $t:ty,$o:expr) => { $o };
 }
 
-#[macro_export]
-#[doc(hidden)]
-macro_rules! braw_out_ptr {
-    ($expr:expr $(, $arg:expr)*) => {{
-        let mut tmp = std::ptr::null_mut();
-        let hr = $expr($($arg,)* &mut tmp)?;
-        check_hr(hr)?;
-        ComPtr::new(tmp)?
-    }};
+/// Call a COM method that returns a new interface through its last, `[out]`
+/// parameter, and own that interface.
+///
+/// # Safety
+/// `call` must pass its argument as that parameter of a method that stores in it a
+/// `T` interface whose reference passes to the caller, or null.
+pub(crate) unsafe fn out_interface<T>(call: impl FnOnce(*mut *mut T) -> Result<HRESULT, BrawError>) -> Result<ComPtr<T>, BrawError> {
+    let mut out = std::ptr::null_mut();
+    call(&mut out)?;
+    // SAFETY: per this function's contract.
+    unsafe { ComPtr::new(out) }
 }
 
+/// A COM interface the SDK declares: a struct holding the vtable pointer every
+/// object of the interface begins with.
+///
+/// # Safety
+/// `Self` must be the layout of that interface, and [`IID`](Self::IID) its IID: a
+/// `ComPtr<Self>` dereferences to a `Self` at the object `QueryInterface` returns.
+pub unsafe trait Interface {
+    /// The interface's IID.
+    const IID: GUID;
+}
+
+/// An owned reference to a COM interface: released on drop, `AddRef`ed on clone.
 #[repr(C)]
 pub struct ComPtr<T> { ptr: NonNull<T> }
 impl<T> ComPtr<T> {
-    pub fn new(nn: *mut T) -> Result<Self, BrawError> { Ok(Self { ptr: NonNull::new(nn).ok_or(BrawError::NullValue)? }) }
+    /// Take ownership of one reference to the COM interface at `nn`, as returned
+    /// through an SDK `[out]` parameter. Null is [`BrawError::NullValue`].
+    ///
+    /// # Safety
+    /// `nn` must be null or a live `T` interface, and the caller must own the
+    /// reference it passes on: `ComPtr` releases it on drop.
+    pub unsafe fn new(nn: *mut T) -> Result<Self, BrawError> { Ok(Self { ptr: NonNull::new(nn).ok_or(BrawError::NullValue)? }) }
+    /// A new reference to the COM interface at `ptr`, the caller keeping its own — as
+    /// for an interface the SDK passes into a callback. Null is
+    /// [`BrawError::NullValue`].
+    ///
+    /// # Safety
+    /// `ptr` must be null or a live `T` interface.
+    pub(crate) unsafe fn add_ref_from(ptr: *mut T) -> Result<Self, BrawError> {
+        // SAFETY: a live interface (per this function's contract), whose reference
+        // `new` owns once it has added it.
+        unsafe {
+            let mut new = Self::new(ptr)?;
+            new.add_ref();
+            Ok(new)
+        }
+    }
+    /// The interface pointer, still owned by `self`.
     pub fn as_raw(&self) -> *mut T { self.ptr.as_ptr() }
+    /// How many references to the object there are besides `self`'s, as its
+    /// `AddRef` and `Release` report them.
+    pub(crate) fn other_references(&self) -> ComUlong {
+        // SAFETY: `self` holds a reference to a live object, so the one added here is
+        // released with the object still alive.
+        unsafe {
+            let vtbl = self.get_iunknown_vtbl();
+            let count = (vtbl.AddRef)(self.as_raw().cast());
+            (vtbl.Release)(self.as_raw().cast());
+            count.saturating_sub(2)
+        }
+    }
+    /// The object's `U` interface, from `QueryInterface`. An object without one is
+    /// [`BrawError::NoInterface`].
+    pub fn query_interface<U: Interface>(&self) -> Result<ComPtr<U>, BrawError> {
+        let (iid, mut out) = (U::IID, std::ptr::null_mut());
+        // SAFETY: `self` is a live COM object, and `out` receives a reference to its
+        // `U` interface, which `U::IID` names.
+        unsafe {
+            check_hr((self.get_iunknown_vtbl().QueryInterface)(self.as_raw().cast(), riid(&iid), &mut out))?;
+            ComPtr::new(out.cast())
+        }
+    }
     /// Take ownership of one reference to the COM object at `ptr`.
     ///
     /// # Safety
@@ -470,9 +658,19 @@ impl<T> Drop for ComPtr<T> {
     }
 }
 impl<T> ComPtr<T> {
+    /// Add a reference to the interface without a `ComPtr` to own it.
+    ///
+    /// # Safety
+    /// The extra reference must be given up later — by [`release`](Self::release) or
+    /// by passing it to code that takes ownership of one — or the object leaks.
     pub unsafe fn add_ref(&mut self) {
         unsafe { (self.get_iunknown_vtbl().AddRef)(self.ptr.as_ptr() as *mut c_void); }
     }
+    /// Release a reference to the interface without giving up `self`.
+    ///
+    /// # Safety
+    /// The reference released must be one taken by [`add_ref`](Self::add_ref): `self`
+    /// still releases its own on drop, so the object must outlive it.
     pub unsafe fn release(&mut self) {
         unsafe { (self.get_iunknown_vtbl().Release)(self.ptr.as_ptr() as *mut c_void); }
     }
@@ -522,9 +720,12 @@ impl Drop for ComPtrRefGuard {
 }
 unsafe impl Send for ComPtrRefGuard {}
 
+/// A `Vec` that drops its elements last-to-first, so later keep-alives go before
+/// the ones they depend on.
 #[derive(Clone)]
 pub struct DropOrderVec<T: Clone>(pub Vec<T>);
 impl<T: Clone> DropOrderVec<T> {
+    /// A copy with `v` appended.
     pub fn clone_and_add(&self, v: T) -> Self {
         self.clone_and_extend([v])
     }
@@ -551,7 +752,56 @@ impl<T: Clone> From<Vec<T>> for DropOrderVec<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::DropOrderVec;
+    use super::*;
+    use std::sync::{ Arc, Mutex };
+    use std::sync::atomic::{ AtomicUsize, Ordering };
+
+    /// Records, by name, when it is dropped.
+    struct Logged(&'static str, Arc<Mutex<Vec<&'static str>>>);
+    impl Drop for Logged {
+        fn drop(&mut self) { self.1.lock().unwrap().push(self.0); }
+    }
+
+    /// An object the "SDK" also references, until told to let go.
+    fn object_held_elsewhere(log: &Arc<Mutex<Vec<&'static str>>>) -> (ComPtr<IUnknown>, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let object = ComObject::create(Owned(Logged("object", log.clone())));
+        let sdk_reference = object.add_ref_and_get_guard();
+        let (let_go, told) = std::sync::mpsc::channel::<()>();
+        let sdk = std::thread::spawn(move || {
+            let _ = told.recv();
+            drop(sdk_reference);
+        });
+        (object, let_go, sdk)
+    }
+
+    #[test]
+    fn an_object_is_released_before_its_dependents_once_the_sdk_lets_go() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (object, let_go, sdk) = object_held_elsewhere(&log);
+        // The SDK lets go while the release waits for it.
+        let_go.send(()).unwrap();
+        unsafe { release_before(object, Logged("dependent", log.clone())) };
+        assert_eq!(*log.lock().unwrap(), ["object", "dependent"]);
+        sdk.join().unwrap();
+    }
+
+    #[test]
+    fn inside_an_sdk_call_the_release_waits_on_a_thread_of_its_own() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (object, let_go, sdk) = object_held_elsewhere(&log);
+        let (done, released) = std::sync::mpsc::channel();
+        struct Signal(std::sync::mpsc::Sender<()>);
+        impl Drop for Signal {
+            fn drop(&mut self) { let _ = self.0.send(()); }
+        }
+        // Inside an SDK call the release must not wait: the SDK may be waiting on it.
+        ffi_guard("test", (), || unsafe { release_before(object, (Logged("dependent", log.clone()), Signal(done))) });
+        assert!(log.lock().unwrap().is_empty(), "nothing is released while the SDK holds the object");
+        let_go.send(()).unwrap();
+        released.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+        assert_eq!(*log.lock().unwrap(), ["object", "dependent"]);
+        sdk.join().unwrap();
+    }
 
     #[test]
     fn clone_and_extend_appends_in_order_and_leaves_the_original() {
@@ -560,5 +810,36 @@ mod tests {
         assert_eq!(more.0, [1, 2, 3, 4]);
         assert_eq!(base.clone_and_add(5).0, [1, 2, 5]);
         assert_eq!(base.0, [1, 2]);
+    }
+
+    /// An inline buffer, which moves with its owner, counting its drops.
+    struct Inline([u8; 8], Arc<AtomicUsize>);
+    impl AsMut<[u8]> for Inline {
+        fn as_mut(&mut self) -> &mut [u8] { &mut self.0 }
+    }
+    impl Drop for Inline {
+        fn drop(&mut self) {
+            assert_eq!(self.0, [7; 8], "the writes through the pointer landed in the buffer");
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn an_sdk_buffer_stays_put_until_its_last_guard_goes() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let (ptr, len, guard) = sdk_buffer(Inline([0; 8], dropped.clone()));
+        assert_eq!(len, 8);
+        let (job, frame) = (guard.clone(), guard);
+        // The SDK writes through the pointer while the guards are moved around.
+        let moved = std::thread::spawn(move || job).join().unwrap();
+        unsafe { std::ptr::write_bytes(ptr, 7, len) };
+        drop(frame);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "a job still holds the buffer");
+        drop(moved);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+
+        let (ptr, len, guard) = sdk_buffer(vec![0u8; 3]);
+        unsafe { std::ptr::write_bytes(ptr, 1, len) };
+        drop(guard);
     }
 }

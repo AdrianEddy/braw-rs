@@ -17,12 +17,13 @@ mod abi {
     pub type SafeArrayBoundType = i32;
 }
 
+// Named after their Windows counterparts.
 #[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-#[allow(non_upper_case_globals)]
+#[allow(dead_code, non_upper_case_globals, clippy::upper_case_acronyms)]
 mod abi {
     use core::ffi::{ c_long, c_void };
-    pub type HRESULT = i32; // standard COM-style HRESULT
+    /// The status code SDK calls return.
+    pub type HRESULT = i32;
     pub const S_OK: HRESULT = 0;
     pub const S_FALSE: HRESULT = 1;
     // The SDK's own COM error set (`LinuxCOM.h`; CoreFoundation's `CFPlugInCOM.h`
@@ -125,10 +126,13 @@ mod abi {
 }
 
 pub(crate) use abi::*;
+/// The status code SDK calls return.
 pub use abi::HRESULT;
 
 pub(crate) type BlackmagicCreateFn = unsafe extern "C" fn() -> *mut super::IBlackmagicRawFactory;
 
+/// The SDK library's name on this platform, to load through the platform's library
+/// search path with [`Factory::load_from`](crate::Factory::load_from).
 pub fn default_library_name() -> &'static str {
     #[cfg(target_os = "windows")] { "BlackmagicRawAPI.dll" }
     #[cfg(any(target_os = "macos", target_os = "ios"))] { "BlackmagicRawAPI.framework/BlackmagicRawAPI" }

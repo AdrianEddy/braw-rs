@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2025 Adrian <adrian.eddy at gmail>
+
+//! Observe a codec's jobs through a [`BrawCallback`] while awaiting their futures.
+//!
+//! Usage: `cargo run --example callback -- <clip.braw>`
+
 use braw::*;
 
 struct MyHandler;
@@ -16,12 +23,16 @@ impl BrawCallback for MyHandler  {
 }
 
 fn main() -> Result<(), BrawError> {
+    let Some(path) = std::env::args().nth(1) else {
+        eprintln!("usage: callback <clip.braw>");
+        std::process::exit(2);
+    };
     pollster::block_on(async {
         let braw = Factory::load_from(default_library_name())?;
-        let mut codec = braw.create_codec()?;
-        codec.set_callback(MyHandler).unwrap();
+        let codec = braw.create_codec()?;
+        codec.set_callback(MyHandler)?;
 
-        let clip = codec.open_clip(&std::env::args().nth(1).unwrap_or_else(|| "E:/A001_06121551_C014.braw".into()))?;
+        let clip = codec.open_clip(&path)?;
 
         let frame = clip.read_frame(0).await?;
         println!("Frame {}", frame.frame_index()?);

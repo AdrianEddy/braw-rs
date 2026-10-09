@@ -2,8 +2,9 @@
 // Copyright © 2025 Adrian <adrian.eddy at gmail>
 
 //! The bindings in `src/sdk.rs` must match the SDK header they are written
-//! against — `sdk/Linux/Include/BlackmagicRawAPI.h` (the Windows IDL, the Apple
-//! header and the Linux header declare the same interfaces).
+//! against — the SDK's `Linux/Include/BlackmagicRawAPI.h` (the Windows IDL, the
+//! Apple header and the Linux header declare the same interfaces). Skips without
+//! the SDK, as the other SDK-backed tests do.
 //!
 //! A COM call goes through a vtable slot chosen by position, so an interface whose
 //! methods are declared out of order — or with one missing — calls the wrong
@@ -13,12 +14,23 @@
 //! `IBlackmagicRawCallback::ReadAudioComplete`), so this compares, per interface,
 //! the method order, the IID and the enumerator values.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+mod common;
 
-fn read(rel: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display())).replace("\r\n", "\n")
+use std::collections::BTreeMap;
+use std::path::Path;
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display())).replace("\r\n", "\n")
+}
+
+/// The bindings' source.
+fn bindings() -> String {
+    read(&common::repo_dir().join("src/sdk.rs"))
+}
+
+/// The SDK header, or `None` to skip.
+fn header() -> Option<String> {
+    common::sdk_file("Linux/Include/BlackmagicRawAPI.h").map(|path| read(&path))
 }
 
 /// `name(` → `name`, for the first identifier immediately before `(`.
@@ -106,8 +118,9 @@ fn enums(src: &str, open: &str, item_prefix: impl Fn(&str) -> String) -> BTreeMa
 
 #[test]
 fn vtables_match_the_sdk_header() {
-    let header = header_interfaces(&read("sdk/Linux/Include/BlackmagicRawAPI.h"));
-    let bindings = binding_interfaces(&read("src/sdk.rs"));
+    let Some(header) = header() else { return };
+    let header = header_interfaces(&header);
+    let bindings = binding_interfaces(&bindings());
     assert!(header.len() >= 36, "parsed only {} header interfaces", header.len());
     let mismatches: Vec<String> = header
         .keys()
@@ -122,21 +135,23 @@ fn vtables_match_the_sdk_header() {
 
 #[test]
 fn iids_match_the_sdk_header() {
-    let header = iids(&read("sdk/Linux/Include/BlackmagicRawAPI.h"), "BMD_CONST REFIID IID_");
-    let bindings = iids(&read("src/sdk.rs"), "pub(crate) const IID_");
+    let Some(header) = header() else { return };
+    let header = iids(&header, "BMD_CONST REFIID IID_");
+    let bindings = iids(&bindings(), "pub(crate) const IID_");
     assert!(header.len() >= 36, "parsed only {} header IIDs", header.len());
     assert_eq!(bindings, header);
 }
 
 #[test]
 fn enumerators_match_the_sdk_header() {
-    let header = enums(&read("sdk/Linux/Include/BlackmagicRawAPI.h"), "enum _", |name| {
+    let Some(header) = header() else { return };
+    let header = enums(&header, "enum _", |name| {
         // `blackmagicRawClipProcessingAttributeGamma` for `BlackmagicRawClipProcessingAttribute`.
         let mut prefix = name.to_owned();
         prefix[..1].make_ascii_lowercase();
         prefix
     });
-    let bindings = enums(&read("src/sdk.rs"), "pub enum ", |_| String::new());
+    let bindings = enums(&bindings(), "pub enum ", |_| String::new());
     let mut checked = 0;
     for (name, items) in &header {
         if items.is_empty() { continue; } // e.g. `BlackmagicRawVariantType`, whose values are `VT_*` names

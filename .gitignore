@@ -1,4 +1,4 @@
-debug
-target
-sdk
-Cargo.lock
+/target
+
+# The Blackmagic RAW SDK, unpacked for the tests (see CONTRIBUTING.md)
+/sdk

@@ -3,21 +3,37 @@
 
 use super::*;
 
+/// An error from the SDK, from loading it, or from I/O done on its behalf.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum BrawError {
+    /// The SDK returned a null pointer or value where one was expected.
     NullValue,
+    /// `E_UNEXPECTED`: catastrophic failure.
     Unexpected,
+    /// `E_NOTIMPL`: not implemented.
     NotImplemented,
+    /// `E_OUTOFMEMORY`: an allocation failed.
     OutOfMemory,
+    /// `E_INVALIDARG`: an argument was invalid.
     InvalidArgument,
+    /// `E_NOINTERFACE`: the object does not implement the requested interface.
     NoInterface,
+    /// `E_POINTER`: an invalid pointer was passed.
     Pointer,
+    /// `E_HANDLE`: an invalid handle was passed.
     Handle,
+    /// `E_ABORT`: the operation was aborted, e.g. a job cancelled with `abort()`.
     Abort,
+    /// `E_FAIL`: unspecified failure.
     Fail,
+    /// `E_ACCESSDENIED`: access was denied.
     AccessDenied,
+    /// The GPU device was lost, removed or reset.
     DeviceLost,
+    /// Any other `HRESULT`.
     OtherHresult(HRESULT),
+    /// The SDK library failed to load, or lacks an entry point.
     Libloading(libloading::Error),
     /// The loaded library does not implement the Blackmagic RAW SDK 6.0 codec
     /// interface these bindings are built on — it is older, or a newer release
@@ -27,6 +43,7 @@ pub enum BrawError {
     /// An I/O error: from a file read or written while working with the SDK, or a
     /// Win32 file error the SDK reported (Windows only).
     Io(std::io::Error),
+    /// Any other error, described by its message.
     Other(String),
 }
 impl Clone for BrawError {
@@ -101,16 +118,10 @@ fn major_minor(version: &str) -> Option<(u32, u32)> {
 ///
 /// The SDK is COM on Windows (`winerror.h` values) but ships its own
 /// `LinuxCOM.h` for the macOS / Linux / iPadOS dispatch builds, which defines a
-/// COMPLETELY DIFFERENT numeric set (`sdk/Linux/Include/LinuxCOM.h:72-81`). The
-/// two sets are disjoint, so recognising both here is unambiguous and keeps the
-/// mapping platform-independent.
-///
-/// Knowing only the LinuxCOM set (the previous behaviour) left EVERY Windows
-/// failure as `OtherHresult(_)`: `E_FAIL` from a rejected `OpenClip` looked like
-/// an unknown code, and — worse — `E_ABORT`, which the SDK returns for a job the
-/// caller deliberately `Abort()`ed (the seek-drain path), never mapped to
-/// [`BrawError::Abort`] and so was classified as a hard failure by consumers
-/// instead of a cancellation.
+/// completely different numeric set. The two sets are disjoint, so recognising
+/// both here is unambiguous and keeps the mapping platform-independent — in
+/// particular `E_ABORT`, which the SDK returns for a job the caller aborted, is
+/// [`BrawError::Abort`] everywhere, so a cancellation can be told from a failure.
 ///
 /// On Windows, any other `HRESULT_FROM_WIN32` code (`0x8007xxxx`) is a Win32 error
 /// — among them the `ERROR_FILE_NOT_FOUND` / `ERROR_FILE_EXISTS` this crate reports
@@ -165,6 +176,7 @@ impl From<std::io::Error> for BrawError {
     fn from(e: std::io::Error) -> Self { BrawError::Io(e) }
 }
 
+/// The outcome of a raw SDK call: `Ok(true)` for `S_OK`, `Ok(false)` for `S_FALSE`.
 pub type BrawResult = Result<bool, BrawError>;
 
 pub(crate) fn check_hr(hr: HRESULT) -> BrawResult { if hr == S_OK { Ok(true) } else if hr == S_FALSE { Ok(false) } else { Err(BrawError::from(hr)) } }

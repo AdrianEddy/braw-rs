@@ -6,7 +6,7 @@
 //! into it would jump to the wrong methods. `Factory::create_codec` must refuse
 //! it — before its first call through the codec — and name the version it found.
 //!
-//! Needs a pre-6.0 library, which this repository does not ship: point
+//! Needs a pre-6.0 library, which the SDK 6.0 download does not include: point
 //! `BRAW_LEGACY_SDK_LIBRARY` at one (e.g. the 5.0 `BlackmagicRawAPI.dll`) and run
 //! with `--ignored`. It lives in its own test binary because it loads that
 //! library into the process.

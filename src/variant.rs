@@ -3,30 +3,44 @@
 
 use super::*;
 
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
-
+/// A metadata or attribute value: the Rust form of the SDK's `VARIANT`.
 #[derive(Debug, Clone)]
 pub enum VariantValue {
+    /// No value
     Empty,
+    /// Unsigned 8 bit integer
     U8(u8),
+    /// Signed 16 bit integer
     S16(i16),
+    /// Unsigned 16 bit integer
     U16(u16),
+    /// Signed 32 bit integer
     S32(i32),
+    /// Unsigned 32 bit integer
     U32(u32),
+    /// Single precision floating point number
     F32(f32),
+    /// String
     String(String),
+    /// Array of unsigned 8 bit integers
     ArrayU8(Vec<u8>),
+    /// Array of signed 16 bit integers
     ArrayI16(Vec<i16>),
+    /// Array of unsigned 16 bit integers
     ArrayU16(Vec<u16>),
+    /// Array of signed 32 bit integers
     ArrayI32(Vec<i32>),
+    /// Array of unsigned 32 bit integers
     ArrayU32(Vec<u32>),
+    /// Array of single precision floating point numbers
     ArrayF32(Vec<f32>),
+    /// Double precision floating point number
     F64(f64),
 }
 
 impl RawLibrary {
-    pub fn variant_to_rust(&self, mut v: VARIANT) -> VariantValue {
+    /// Convert a `VARIANT` the SDK filled into a [`VariantValue`], then clear it.
+    pub(crate) fn variant_to_rust(&self, mut v: VARIANT) -> VariantValue {
         let _self = &self;
         #[cfg(not(target_os = "windows"))] let VariantClear = |a| -> HRESULT { unsafe { (_self.VariantClear)(a) } };
         unsafe {
@@ -52,7 +66,7 @@ impl RawLibrary {
                     }
                     #[cfg(any(target_os = "macos", target_os = "ios"))] {
                         // Borrowed: `VariantClear` below releases the CFString.
-                        VariantValue::String(read_sdk_string(v.Anonymous.Anonymous.Anonymous.bstrVal as *const core::ffi::c_void))
+                        VariantValue::String(read_sdk_string(v.Anonymous.Anonymous.Anonymous.bstrVal))
                     }
                     #[cfg(target_os = "linux")] {
                         let p = v.Anonymous.Anonymous.Anonymous.bstrVal as *mut i8;
@@ -73,7 +87,6 @@ impl RawLibrary {
                     #[cfg(not(target_os = "windows"))] let SafeArrayGetLBound    = |a, b, c| -> HRESULT { (_this.SafeArrayGetLBound   )(a, b, c) };
                     #[cfg(not(target_os = "windows"))] let SafeArrayGetUBound    = |a, b, c| -> HRESULT { (_this.SafeArrayGetUBound   )(a, b, c) };
                     #[cfg(not(target_os = "windows"))] let SafeArrayAccessData   = |a, b|    -> HRESULT { (_this.SafeArrayAccessData  )(a, b) };
-                    //#[cfg(not(target_os = "windows"))] let SafeArrayUnaccessData = |a|       -> HRESULT { (_this.SafeArrayUnaccessData)(a) };
 
                     let sa = v.Anonymous.Anonymous.Anonymous.parray;
                     if sa.is_null() {
@@ -84,7 +97,7 @@ impl RawLibrary {
                     let mut data_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
                     let mut hr = SafeArrayAccessData(sa, &mut data_ptr);
                     if hr != S_OK {
-                        eprintln!("Failed to access SafeArray data (hr=0x{:08X})", hr as u32);
+                        log::error!("Failed to access SafeArray data (hr=0x{:08X})", hr as u32);
                         return VariantValue::Empty;
                     }
 
@@ -100,7 +113,7 @@ impl RawLibrary {
                     let mut elem_vt: VARENUM = 0;
                     hr = SafeArrayGetVartype(sa, &mut elem_vt);
                     if hr != S_OK {
-                        eprintln!("Failed to get VARTYPE from SafeArray (hr=0x{:08X})", hr as u32);
+                        log::error!("Failed to get VARTYPE from SafeArray (hr=0x{:08X})", hr as u32);
                         return VariantValue::Empty;
                     }
 
@@ -109,12 +122,12 @@ impl RawLibrary {
                     let mut ubound: SafeArrayBoundType = -1;
                     hr = SafeArrayGetLBound(sa, 1, &mut lbound);
                     if hr != S_OK {
-                        eprintln!("Failed to get LBound from SafeArray (hr=0x{:08X})", hr as u32);
+                        log::error!("Failed to get LBound from SafeArray (hr=0x{:08X})", hr as u32);
                         return VariantValue::Empty;
                     }
                     hr = SafeArrayGetUBound(sa, 1, &mut ubound);
                     if hr != S_OK {
-                        eprintln!("Failed to get UBound from SafeArray (hr=0x{:08X})", hr as u32);
+                        log::error!("Failed to get UBound from SafeArray (hr=0x{:08X})", hr as u32);
                         return VariantValue::Empty;
                     }
 
@@ -127,7 +140,7 @@ impl RawLibrary {
                         VT_UI4 => VariantValue::ArrayU32(copy_safearray_elems::<u32>(data_ptr, safe_len)),
                         VT_R4  => VariantValue::ArrayF32(copy_safearray_elems::<f32>(data_ptr, safe_len)),
                         other => {
-                            eprintln!("Unsupported SAFEARRAY element VARTYPE: {}", other);
+                            log::warn!("Unsupported SAFEARRAY element VARTYPE: {}", other);
                             VariantValue::Empty
                         }
                     }
@@ -139,11 +152,13 @@ impl RawLibrary {
             ret
         }
     }
+    /// Convert `v` into a `VARIANT` to pass to the SDK.
     pub fn variant_from_rust<'lib>(&'lib self, v: VariantValue) -> NativeVariant<'lib> {
         NativeVariant::from_value(self, &v)
     }
 }
 
+/// A `VARIANT` owned by Rust, cleared on drop.
 #[allow(dead_code)]
 pub struct NativeVariant<'a> {
     raw: VARIANT,
@@ -151,11 +166,13 @@ pub struct NativeVariant<'a> {
 }
 
 impl<'a> NativeVariant<'a> {
+    /// The `VARIANT`, still owned by `self`.
     #[inline]
     pub fn as_raw(&mut self) -> *mut VARIANT {
         &mut self.raw as *mut VARIANT
     }
 
+    /// A `VARIANT` holding `value`.
     pub fn from_value(lib: &'a RawLibrary, value: &VariantValue) -> Self {
         let mut nv = Self { raw: unsafe { std::mem::zeroed() }, lib };
         #[cfg(target_os = "windows")]
@@ -255,7 +272,7 @@ impl<'a> NativeVariant<'a> {
         let set_sa = |dest: &mut VARIANT, elem_vt: VARENUM, elem_size: usize, len: usize, src_ptr: *const u8| {
             let mut bound = SAFEARRAYBOUND { cElements: len as u32, lLbound: 0 };
             unsafe {
-                let sa = (lib.SafeArrayCreate)(elem_vt as VARENUM, 1, &mut bound);
+                let sa = (lib.SafeArrayCreate)(elem_vt, 1, &mut bound);
                 if !sa.is_null() && len > 0 {
                     let mut p: *mut core::ffi::c_void = std::ptr::null_mut();
                     if (lib.SafeArrayAccessData)(sa, &mut p) == S_OK {
@@ -270,36 +287,28 @@ impl<'a> NativeVariant<'a> {
         };
 
         match value {
-            VariantValue::Empty => { dest.Anonymous.Anonymous.vt = VT_EMPTY as VARENUM; }
-            VariantValue::U8(_)  => { panic!("Blackmagic does not use u8 scalar variants") }
-            VariantValue::S16(x) => { dest.Anonymous.Anonymous.vt = VT_I2  as VARENUM; dest.Anonymous.Anonymous.Anonymous.iVal = *x; }
-            VariantValue::U16(x) => { dest.Anonymous.Anonymous.vt = VT_UI2 as VARENUM; dest.Anonymous.Anonymous.Anonymous.uiVal = *x; }
-            VariantValue::S32(x) => { dest.Anonymous.Anonymous.vt = VT_I4  as VARENUM; dest.Anonymous.Anonymous.Anonymous.intVal = *x; }
-            VariantValue::U32(x) => { dest.Anonymous.Anonymous.vt = VT_UI4 as VARENUM; dest.Anonymous.Anonymous.Anonymous.uintVal = *x; }
-            VariantValue::F32(x) => { dest.Anonymous.Anonymous.vt = VT_R4  as VARENUM; dest.Anonymous.Anonymous.Anonymous.fltVal = *x; }
-            VariantValue::F64(x) => { dest.Anonymous.Anonymous.vt = VT_R8  as VARENUM; dest.Anonymous.Anonymous.Anonymous.dblVal = *x; }
+            VariantValue::Empty => { dest.Anonymous.Anonymous.vt = VT_EMPTY; }
+            // The SDK's `VARIANT` has no 8-bit member: a `VT_UI1` is read from the
+            // low byte of `uiVal` (see `variant_to_rust`).
+            VariantValue::U8(x)  => { dest.Anonymous.Anonymous.vt = VT_UI1; dest.Anonymous.Anonymous.Anonymous.uiVal = u16::from(*x); }
+            VariantValue::S16(x) => { dest.Anonymous.Anonymous.vt = VT_I2;  dest.Anonymous.Anonymous.Anonymous.iVal = *x; }
+            VariantValue::U16(x) => { dest.Anonymous.Anonymous.vt = VT_UI2; dest.Anonymous.Anonymous.Anonymous.uiVal = *x; }
+            VariantValue::S32(x) => { dest.Anonymous.Anonymous.vt = VT_I4;  dest.Anonymous.Anonymous.Anonymous.intVal = *x; }
+            VariantValue::U32(x) => { dest.Anonymous.Anonymous.vt = VT_UI4; dest.Anonymous.Anonymous.Anonymous.uintVal = *x; }
+            VariantValue::F32(x) => { dest.Anonymous.Anonymous.vt = VT_R4;  dest.Anonymous.Anonymous.Anonymous.fltVal = *x; }
+            VariantValue::F64(x) => { dest.Anonymous.Anonymous.vt = VT_R8;  dest.Anonymous.Anonymous.Anonymous.dblVal = *x; }
             VariantValue::String(s) => {
-                #[cfg(any(target_os = "macos", target_os = "ios"))]
-                unsafe {
-                    let bytes = s.as_bytes();
-                    let cf = CFStringCreateWithBytes(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize, kCFStringEncodingUTF8, false);
-                    dest.Anonymous.Anonymous.vt = VT_BSTR as VARENUM;
-                    dest.Anonymous.Anonymous.Anonymous.bstrVal = cf as *mut _;
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let c = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-                    dest.Anonymous.Anonymous.vt = VT_BSTR as VARENUM;
-                    dest.Anonymous.Anonymous.Anonymous.bstrVal = c.into_raw() as *mut _;
-                }
+                // `VariantClear` frees it with the SDK's deallocator.
+                dest.Anonymous.Anonymous.vt = VT_BSTR;
+                dest.Anonymous.Anonymous.Anonymous.bstrVal = alloc_sdk_string(s) as _;
             }
             // arrays
-            VariantValue::ArrayU8(v)  => set_sa(dest, VT_UI1 as VARENUM, std::mem::size_of::<u8>(),  v.len(),  v.as_ptr()  as *const u8),
-            VariantValue::ArrayI16(v) => set_sa(dest, VT_I2  as VARENUM, std::mem::size_of::<i16>(), v.len(),  v.as_ptr()  as *const u8),
-            VariantValue::ArrayU16(v) => set_sa(dest, VT_UI2 as VARENUM, std::mem::size_of::<u16>(), v.len(),  v.as_ptr()  as *const u8),
-            VariantValue::ArrayI32(v) => set_sa(dest, VT_I4  as VARENUM, std::mem::size_of::<i32>(), v.len(),  v.as_ptr()  as *const u8),
-            VariantValue::ArrayU32(v) => set_sa(dest, VT_UI4 as VARENUM, std::mem::size_of::<u32>(), v.len(),  v.as_ptr()  as *const u8),
-            VariantValue::ArrayF32(v) => set_sa(dest, VT_R4  as VARENUM, std::mem::size_of::<f32>(), v.len(),  v.as_ptr()  as *const u8),
+            VariantValue::ArrayU8(v)  => set_sa(dest, VT_UI1, std::mem::size_of::<u8>(),  v.len(),  v.as_ptr()),
+            VariantValue::ArrayI16(v) => set_sa(dest, VT_I2 , std::mem::size_of::<i16>(), v.len(),  v.as_ptr()  as *const u8),
+            VariantValue::ArrayU16(v) => set_sa(dest, VT_UI2, std::mem::size_of::<u16>(), v.len(),  v.as_ptr()  as *const u8),
+            VariantValue::ArrayI32(v) => set_sa(dest, VT_I4 , std::mem::size_of::<i32>(), v.len(),  v.as_ptr()  as *const u8),
+            VariantValue::ArrayU32(v) => set_sa(dest, VT_UI4, std::mem::size_of::<u32>(), v.len(),  v.as_ptr()  as *const u8),
+            VariantValue::ArrayF32(v) => set_sa(dest, VT_R4 , std::mem::size_of::<f32>(), v.len(),  v.as_ptr()  as *const u8),
         }
     }
 }

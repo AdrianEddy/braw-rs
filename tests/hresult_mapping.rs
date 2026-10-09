@@ -5,14 +5,9 @@
 //!
 //! The BRAW SDK is real COM on Windows (`winerror.h` values) but ships its own
 //! `LinuxCOM.h` for the macOS / Linux / iPadOS dispatch builds, which defines a
-//! COMPLETELY DIFFERENT numeric set (`sdk/Linux/Include/LinuxCOM.h:72-81`).
-//!
-//! Knowing only the LinuxCOM set left EVERY Windows failure as
-//! `OtherHresult(_)`. That is not cosmetic: `E_ABORT` — which the SDK returns for
-//! a job the caller deliberately `Abort()`ed (the seek-drain path) — never mapped
-//! to [`BrawError::Abort`], so consumers classified a normal cancellation as a
-//! hard failure. Likewise `E_FAIL` from a rejected `OpenClip` arrived as an
-//! unknown code.
+//! completely different numeric set. Recognising both matters: `E_ABORT` — which
+//! the SDK returns for a job the caller `Abort()`ed — must map to
+//! [`BrawError::Abort`] on every platform, or a cancellation looks like a failure.
 //!
 //! The two sets are disjoint, so both are recognised unconditionally.
 

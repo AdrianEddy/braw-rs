@@ -2,6 +2,11 @@
 // Copyright © 2025 Adrian <adrian.eddy at gmail>
 
 //! The SDK and media the tests run against, and helpers they share.
+//!
+//! The tests use an unpacked Blackmagic RAW SDK — `$BRAW_SDK_DIR`, else `sdk/` in
+//! the repository — in the SDK's own layout (`Win/`, `Linux/`, `Mac/`, `Media/`).
+//! Without one, the tests that need it pass without running (`--nocapture` shows
+//! which) — unless `BRAW_SDK_DIR` or `BRAW_REQUIRE_SDK` is set, when they fail.
 
 #![allow(dead_code)] // each test binary uses a subset
 
@@ -12,40 +17,65 @@ pub fn repo_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The SDK library to test against: `$BRAW_SDK_LIBRARY` if set, else the build in
-/// this repository for the target under test — the Windows SDK ships x64, ARM64 and
-/// ARM64EC builds side by side, and the Linux x86-64 `.so` set sits at the
-/// repository root. `None` on a target the repository has no build for.
+/// The root of the unpacked SDK.
+pub fn sdk_dir() -> PathBuf {
+    std::env::var_os("BRAW_SDK_DIR").map_or_else(|| repo_dir().join("sdk"), PathBuf::from)
+}
+
+/// The SDK library to test against: `$BRAW_SDK_LIBRARY` if set, else the SDK's
+/// build for the target under test — the Windows SDK ships x64, ARM64 and ARM64EC
+/// builds side by side. `None` when the SDK has no build for this target, or is
+/// not there.
 pub fn library_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("BRAW_SDK_LIBRARY") {
         return Some(path.into());
     }
     let bundled = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "sdk/Win/Libraries/BlackmagicRawAPI.dll"
+        "Win/Libraries/BlackmagicRawAPI.dll"
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        "sdk/Win/Libraries/ARM64/BlackmagicRawAPI.dll"
+        "Win/Libraries/ARM64/BlackmagicRawAPI.dll"
     } else if cfg!(all(target_os = "windows", target_arch = "arm64ec")) {
-        "sdk/Win/Libraries/ARM64EC/BlackmagicRawAPI.dll"
+        "Win/Libraries/ARM64EC/BlackmagicRawAPI.dll"
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "libBlackmagicRawAPI.so"
+        "Linux/Libraries/libBlackmagicRawAPI.so"
+    } else if cfg!(target_os = "macos") {
+        "Mac/Libraries/BlackmagicRawAPI.framework/BlackmagicRawAPI"
     } else {
         return None;
     };
-    Some(repo_dir().join(bundled))
+    let path = sdk_dir().join(bundled);
+    path.exists().then_some(path)
+}
+
+/// Skip a test for want of `what` — or fail it, when the SDK was asked for.
+fn skip(what: &str) {
+    let required = std::env::var_os("BRAW_SDK_DIR").is_some() || std::env::var_os("BRAW_REQUIRE_SDK").is_some();
+    assert!(!required, "{what}");
+    eprintln!("skipped: {what}; unpack the SDK into `sdk/`, or set BRAW_SDK_DIR");
 }
 
 /// Load the SDK under test, or `None` — the test then skips — when there is no
 /// library for this target. A library that is there but fails to load is an error.
 pub fn load_sdk() -> Result<Option<Factory>, BrawError> {
     let Some(path) = library_path() else {
-        eprintln!("skipped: no Blackmagic RAW SDK build for this target; point BRAW_SDK_LIBRARY at one");
+        skip("no Blackmagic RAW SDK library for this target");
         return Ok(None);
     };
     Factory::load_from(path).map(Some)
 }
 
+/// A file of the unpacked SDK, or `None` — the test then skips — when it is not there.
+pub fn sdk_file(rel: &str) -> Option<PathBuf> {
+    let path = sdk_dir().join(rel);
+    if !path.exists() {
+        skip(&format!("{} not found", path.display()));
+        return None;
+    }
+    Some(path)
+}
+
 pub fn media_dir() -> PathBuf {
-    repo_dir().join("sdk/Media")
+    sdk_dir().join("Media")
 }
 
 pub fn sample_path() -> PathBuf {

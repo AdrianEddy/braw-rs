@@ -42,14 +42,19 @@ unsafe extern "C" {
 /// A string allocated by Rust and passed to the SDK as an `[in]` parameter.
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct BrawString(pub RawStr);
+pub struct BrawString(RawStr);
+// SAFETY: the string is owned, immutable, and freed by an allocator any thread may
+// call (`SysFreeString`, `CFRelease`, the C allocator).
+unsafe impl Send for BrawString {}
 
 impl BrawString {
+    /// The native string, still owned by `self`.
     #[inline]
     pub fn as_raw(&self) -> *const c_void {
         self.0 as *const c_void
     }
 
+    /// Whether allocating the native string failed.
     #[inline]
     pub fn is_null(&self) -> bool { self.as_raw().is_null() }
 }
