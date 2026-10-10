@@ -60,8 +60,8 @@ unsafe impl<T: Send> Sync for Held<T> {}
 /// # Cancellation semantics
 /// Dropping a *pending* future does **not** cancel the job: the job runs to
 /// completion, keeping what it uses alive meanwhile, and its result is discarded.
-/// To cancel, call [`abort()`](CallbackFuture::abort) (best-effort); the future then
-/// completes, with [`BrawError::Abort`] if the job was aborted in time.
+/// To cancel, call [`abort()`](CallbackFuture::abort) (best-effort) — but do not
+/// then await the future: see `abort` for why it may never resolve.
 pub struct CallbackFuture<T> {
     pub(crate) state: Arc<State<T>>,
     pub(crate) job: Option<ComPtr<IBlackmagicRawJob>>,
@@ -99,10 +99,13 @@ impl<T> Future for CallbackFuture<T> {
 impl<T> CallbackFuture<T> {
     /// Request the SDK abort this in-flight job. **Best-effort**: per the BMD
     /// SDK manual, `Abort` "CAN fail if the job has already been started by
-    /// the internal decoder", and the job still delivers exactly one
-    /// completion callback — so the future still completes, with the job's
-    /// result if the abort came too late. No-op for futures with no job (e.g.
-    /// `prepare_pipeline`).
+    /// the internal decoder", in which case the job completes as usual.
+    ///
+    /// **An aborted future may never resolve.** The manual promises no
+    /// completion callback for a job `Abort` did stop, and BRAW SDK 6.0 on
+    /// macOS (Metal pipeline) delivers none, so awaiting the future hangs.
+    /// To wait for in-flight jobs, await them without aborting. No-op for
+    /// futures with no job (e.g. `prepare_pipeline`).
     pub fn abort(&self) {
         if let Some(job) = &self.job {
             // SAFETY: `Abort` takes no arguments.
