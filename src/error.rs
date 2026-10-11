@@ -34,7 +34,7 @@ pub enum BrawError {
     /// Any other `HRESULT`.
     OtherHresult(HRESULT),
     /// The SDK library failed to load, or lacks an entry point.
-    Libloading(libloading::Error),
+    LibraryLoad(LoadError),
     /// The loaded library does not implement the Blackmagic RAW SDK 6.0 codec
     /// interface these bindings are built on — it is older, or a newer release
     /// changed the interface again. Carries the library's camera support version
@@ -62,7 +62,7 @@ impl Clone for BrawError {
             BrawError::AccessDenied       => BrawError::AccessDenied,
             BrawError::DeviceLost         => BrawError::DeviceLost,
             BrawError::OtherHresult(hr)   => BrawError::OtherHresult(*hr),
-            BrawError::Libloading(e)      => BrawError::Other(e.to_string()), // Workaround for libloading::Error not being Clone, which is https://github.com/rust-lang/rust/issues/24135
+            BrawError::LibraryLoad(e)     => BrawError::LibraryLoad(e.clone()),
             BrawError::UnsupportedSdkVersion(v) => BrawError::UnsupportedSdkVersion(v.clone()),
             // `io::Error` is not `Clone` either: rebuild it from its OS code, or its kind and message.
             BrawError::Io(e)              => BrawError::Io(match e.raw_os_error() {
@@ -90,7 +90,7 @@ impl std::fmt::Display for BrawError {
             BrawError::AccessDenied       => write!(f, "BRAW error: Access denied"),
             BrawError::DeviceLost         => write!(f, "BRAW error: GPU device lost"),
             BrawError::OtherHresult(hr)   => write!(f, "BRAW error: HRESULT 0x{hr:X}"),
-            BrawError::Libloading(e)      => write!(f, "BRAW error: Libloading error: {e}"),
+            BrawError::LibraryLoad(e)     => write!(f, "BRAW error: failed to load the SDK library: {e}"),
             BrawError::UnsupportedSdkVersion(v) => {
                 write!(f, "BRAW error: the loaded Blackmagic RAW SDK library (camera support version {v}) does not implement the SDK 6.0 interfaces these bindings require")?;
                 match major_minor(v).map(|found| found.cmp(&(6, 0))) {
@@ -105,6 +105,29 @@ impl std::fmt::Display for BrawError {
     }
 }
 impl std::error::Error for BrawError { }
+
+/// Why the SDK library failed to load, or which entry point it lacks, as the
+/// platform's loader reported it.
+#[derive(Debug, Clone)]
+pub struct LoadError(Arc<libloading::Error>);
+
+impl LoadError {
+    pub(crate) fn new(e: libloading::Error) -> Self { Self(Arc::new(e)) }
+}
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The loader's own message only names the call that failed ("dlopen failed");
+        // the reason is in its source chain.
+        write!(f, "{}", self.0)?;
+        let mut source = std::error::Error::source(&*self.0);
+        while let Some(e) = source {
+            write!(f, ": {e}")?;
+            source = e.source();
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for LoadError { }
 
 /// The `(major, minor)` of a version string such as `"6.0"` or `"5.1.2"`.
 fn major_minor(version: &str) -> Option<(u32, u32)> {
@@ -169,8 +192,8 @@ impl From<HRESULT> for BrawError {
         }
     }
 }
-impl From<libloading::Error> for BrawError {
-    fn from(e: libloading::Error) -> Self { BrawError::Libloading(e) }
+impl From<LoadError> for BrawError {
+    fn from(e: LoadError) -> Self { BrawError::LibraryLoad(e) }
 }
 impl From<std::io::Error> for BrawError {
     fn from(e: std::io::Error) -> Self { BrawError::Io(e) }

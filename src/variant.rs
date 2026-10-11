@@ -153,14 +153,14 @@ impl RawLibrary {
         }
     }
     /// Convert `v` into a `VARIANT` to pass to the SDK.
-    pub fn variant_from_rust<'lib>(&'lib self, v: VariantValue) -> NativeVariant<'lib> {
+    pub(crate) fn variant_from_rust<'lib>(&'lib self, v: VariantValue) -> NativeVariant<'lib> {
         NativeVariant::from_value(self, &v)
     }
 }
 
 /// A `VARIANT` owned by Rust, cleared on drop.
 #[allow(dead_code)]
-pub struct NativeVariant<'a> {
+pub(crate) struct NativeVariant<'a> {
     raw: VARIANT,
     lib: &'a RawLibrary,
 }
@@ -168,12 +168,12 @@ pub struct NativeVariant<'a> {
 impl<'a> NativeVariant<'a> {
     /// The `VARIANT`, still owned by `self`.
     #[inline]
-    pub fn as_raw(&mut self) -> *mut VARIANT {
+    pub(crate) fn as_raw(&mut self) -> *mut VARIANT {
         &mut self.raw as *mut VARIANT
     }
 
     /// A `VARIANT` holding `value`.
-    pub fn from_value(lib: &'a RawLibrary, value: &VariantValue) -> Self {
+    pub(crate) fn from_value(lib: &'a RawLibrary, value: &VariantValue) -> Self {
         let mut nv = Self { raw: unsafe { std::mem::zeroed() }, lib };
         #[cfg(target_os = "windows")]
         unsafe { Self::fill_variant(&mut nv.raw, value) };

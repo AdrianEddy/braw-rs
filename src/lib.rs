@@ -32,7 +32,7 @@ use libloading::os::unix as dl;
 /// The library is never unloaded: the SDK's worker threads may still be running
 /// its code after every object is gone.
 #[allow(dead_code)]
-pub struct RawLibrary {
+pub(crate) struct RawLibrary {
     #[cfg(not(target_os = "windows"))] VariantInit:           dl::Symbol<VariantInitFn>,
     #[cfg(not(target_os = "windows"))] VariantClear:          dl::Symbol<VariantClearFn>,
     #[cfg(not(target_os = "windows"))] SafeArrayCreate:       dl::Symbol<SafeArrayCreateFn>,
@@ -50,7 +50,7 @@ pub struct RawLibrary {
 
 impl RawLibrary {
     /// Load the BRAW shared library, for the rest of the process.
-    pub fn load<P: libloading::AsFilename>(path: P) -> Result<Self, libloading::Error> {
+    pub(crate) fn load<P: libloading::AsFilename>(path: P) -> Result<Self, libloading::Error> {
         unsafe {
             let lib = dl::Library::new(path)?;
             Ok(Self {
@@ -70,9 +70,9 @@ impl RawLibrary {
     }
 
     /// Create the SDK's factory object.
-    pub fn create_factory(&self) -> Result<ComPtr<IBlackmagicRawFactory>, BrawError> {
+    pub(crate) fn create_factory(&self) -> Result<ComPtr<IBlackmagicRawFactory>, BrawError> {
         unsafe {
-            let create: dl::Symbol<BlackmagicCreateFn> = self.lib.get(b"CreateBlackmagicRawFactoryInstance\0")?;
+            let create: dl::Symbol<BlackmagicCreateFn> = self.lib.get(b"CreateBlackmagicRawFactoryInstance\0").map_err(LoadError::new)?;
             ComPtr::new(create())
         }
     }
@@ -93,7 +93,7 @@ impl Factory {
     /// Load the SDK library at `path` — usually [`default_library_name`], resolved
     /// through the platform's library search path — and create its factory.
     pub fn load_from(path: impl AsRef<std::path::Path>) -> Result<Self, BrawError> {
-        let lib = RawLibrary::load(path.as_ref())?;
+        let lib = RawLibrary::load(path.as_ref()).map_err(LoadError::new)?;
         let factory = lib.create_factory()?;
         Ok(Self {
             lib: Arc::new(lib),
