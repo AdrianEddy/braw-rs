@@ -98,16 +98,8 @@ The tag and the changelog heading carry all of it.
 2. Bump `version` in `Cargo.toml` and run `cargo check` to update `Cargo.lock`.
 3. Run the full test suite against the SDK on every platform you can, with
    `BRAW_REQUIRE_SDK=1`.
-4. Commit, then tag and push both: `git tag vX.Y.Z+A.B && git push origin main vX.Y.Z+A.B`.
+4. Commit and publish: `cargo publish`.
+5. Tag and push both: `git tag vX.Y.Z+A.B && git push origin main vX.Y.Z+A.B`.
 
 The [release workflow](.github/workflows/release.yml) checks that the tag matches the
-crate version, publishes to crates.io through
-[trusted publishing](https://crates.io/docs/trusted-publishing) and creates the GitHub
-release from the changelog section.
-
-crates.io only lets trusted publishing be configured for a crate that already
-exists, so the first release is published by hand: run `cargo publish`, then add
-this repository's `release.yml` workflow, with the `release` environment, as a
-trusted publisher in the crate's settings on crates.io. Pushing the tag afterwards
-creates the GitHub release; the workflow skips publishing a version that is
-already on crates.io.
+crate version and creates the GitHub release from the changelog section.
