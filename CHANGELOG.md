@@ -4,8 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+A version's build metadata names the Blackmagic RAW SDK version the release is
+built on: `0.1.0+6.0` is built on SDK 6.0.
 
 ## [Unreleased]
+
+## [0.1.0+6.0] - 2026-10-11
 
 Initial release, based on Blackmagic RAW SDK 6.0.
 
@@ -38,4 +42,5 @@ Initial release, based on Blackmagic RAW SDK 6.0.
 - `serde` feature (enabled by default) implementing `Serialize` for `VariantValue`.
 - Support for Windows (x64 and ARM64), Linux, macOS and iOS.
 
-[Unreleased]: https://github.com/AdrianEddy/braw-rs/commits/main
+[Unreleased]: https://github.com/AdrianEddy/braw-rs/compare/v0.1.0+6.0...HEAD
+[0.1.0+6.0]: https://github.com/AdrianEddy/braw-rs/releases/tag/v0.1.0+6.0

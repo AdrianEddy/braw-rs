@@ -244,6 +244,7 @@ Yes — see [Custom file I/O](#custom-file-io).
 
 **Which SDK version is supported?**
 **6.0**. SDK 6.0 changed interfaces in place, so older libraries cannot be driven by these bindings — nor can a later one that changes them again. `Factory::create_codec` checks the codec's interface ID, which changes along with its layout, and refuses a library whose codec is not 6.0's with `BrawError::UnsupportedSdkVersion`, naming the version it found.
+Each release names its SDK in its version's build metadata — `0.1.0+6.0` is built on SDK 6.0 — and a release that requires another SDK is a breaking release, so `cargo update` never moves you to one.
 
 ---
 

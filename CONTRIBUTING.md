@@ -80,15 +80,25 @@ inserted in a new release must be inserted at the same position in the bindings.
 `Factory::create_codec` checks the codec's IID to refuse libraries of another
 version; update it, the version in the README and `CHANGELOG.md` with the bindings.
 
+Requiring another SDK is a breaking change, as applications must ship its library
+instead: bump the minor version before 1.0, the major version after — unless the
+new SDK keeps the old one's interfaces and the bindings still accept its library.
+The SDK version goes in the crate version's build metadata (`0.2.0+6.1`), which
+Cargo ignores when resolving versions, so it never stands in for that bump.
+
 ## Releasing
 
+The version is `X.Y.Z+A.B`: the crate's version, then the SDK version it is built
+on as build metadata (see [Updating to a new SDK release](#updating-to-a-new-sdk-release)).
+The tag and the changelog heading carry all of it.
+
 1. In `CHANGELOG.md`, rename `[Unreleased]` to the new version and date
-   (`## [X.Y.Z] - YYYY-MM-DD`), start a new empty `[Unreleased]` section, and update
-   the links at the bottom.
+   (`## [X.Y.Z+A.B] - YYYY-MM-DD`), start a new empty `[Unreleased]` section, and
+   update the links at the bottom.
 2. Bump `version` in `Cargo.toml` and run `cargo check` to update `Cargo.lock`.
 3. Run the full test suite against the SDK on every platform you can, with
    `BRAW_REQUIRE_SDK=1`.
-4. Commit, then tag and push both: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+4. Commit, then tag and push both: `git tag vX.Y.Z+A.B && git push origin main vX.Y.Z+A.B`.
 
 The [release workflow](.github/workflows/release.yml) checks that the tag matches the
 crate version, publishes to crates.io through
