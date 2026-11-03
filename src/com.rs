@@ -182,9 +182,72 @@ pub(crate) unsafe fn release_before<T: 'static, D: Send + 'static>(object: ComPt
     };
     if !in_sdk_call() {
         release();
-    } else if let Err(e) = std::thread::Builder::new().name("braw-release".into()).spawn(release) {
-        log::error!("cannot start a thread to release an SDK object ({e}); leaking it and what it uses");
+    } else {
+        let deferred = DeferredRelease::begin();
+        let run = move || {
+            let _deferred = deferred;
+            release();
+        };
+        if let Err(e) = std::thread::Builder::new().name("braw-release".into()).spawn(run) {
+            log::error!("cannot start a thread to release an SDK object ({e}); leaking it and what it uses");
+        }
     }
+}
+
+/// A [`release_before`] running on a thread of its own, counted until it ends.
+///
+/// The SDK unloads its decoder plugin (`libDecoderCUDA`, `libDecoderOpenCL`) from an
+/// exit handler of its own, so a codec still being destroyed on such a thread when
+/// the process exits runs on in unmapped code and faults. The exit handler that
+/// [`begin`](Self::begin) registers waits for these first: exit handlers run in the
+/// reverse order of registration, and this one is registered after the SDK's, since
+/// a release presupposes a codec. On Windows the process's other threads are ended
+/// before any DLL is unloaded, so there is nothing to wait for.
+struct DeferredRelease;
+
+#[cfg(unix)]
+static DEFERRED_RELEASES: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn atexit(handler: extern "C" fn()) -> core::ffi::c_int;
+}
+
+impl DeferredRelease {
+    fn begin() -> Self {
+        #[cfg(unix)]
+        {
+            static AT_EXIT: std::sync::Once = std::sync::Once::new();
+            // SAFETY: registers a plain `extern "C"` function, which stays valid.
+            AT_EXIT.call_once(|| unsafe {
+                atexit(wait_for_deferred_releases);
+            });
+            *DEFERRED_RELEASES.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        }
+        Self
+    }
+}
+
+impl Drop for DeferredRelease {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let (count, done) = &DEFERRED_RELEASES;
+            *count.lock().unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
+            done.notify_all();
+        }
+    }
+}
+
+/// The exit handler: wait for the deferred releases still running. Bounded, so a
+/// release the SDK never lets finish cannot hang the exit: one waits
+/// [`RELEASE_TIMEOUT`] for the SDK's references and then destroys the object.
+#[cfg(unix)]
+extern "C" fn wait_for_deferred_releases() {
+    let (count, done) = &DEFERRED_RELEASES;
+    let pending = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = done.wait_timeout_while(pending, RELEASE_TIMEOUT * 2, |n| *n > 0);
 }
 
 /// Move `buffer` where the SDK may keep a pointer to its bytes. Returns the bytes,
