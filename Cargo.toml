@@ -2,7 +2,6 @@
 name = "braw"
 version = "0.1.0+6.0"
 edition = "2024"
-rust-version = "1.88"
 authors = ["Adrian <adrian.eddy at gmail>"]
 description = "Safe, async Rust bindings for the Blackmagic RAW SDK"
 license = "MIT OR Apache-2.0"

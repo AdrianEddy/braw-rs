@@ -7,7 +7,6 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
   <a href="https://docs.rs/braw"><img alt="docs.rs" src="https://img.shields.io/docsrs/braw"></a>
   <a href="https://github.com/AdrianEddy/braw-rs/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AdrianEddy/braw-rs/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#license"><img alt="License: MIT/Apache-2.0" src="https://img.shields.io/badge/license-MIT%2FApache--2.0-informational"></a>
-  <a href="#requirements"><img alt="MSRV" src="https://img.shields.io/badge/rustc-1.88+-blue"></a>
   <a href="#requirements"><img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20iOS-success"></a>
 </p>
 
@@ -32,7 +31,7 @@ Safe, ergonomic, and async-first Rust bindings for **Blackmagic RAW SDK** - no b
 
 ### Requirements
 
-* Rust **1.88** or newer.
+* The latest stable Rust.
 * The [**Blackmagic RAW SDK**](https://www.blackmagicdesign.com/developer/products/braw/sdk-and-software) **6.0** for your platform.
 * Ensure the SDK library is discoverable at runtime:
 

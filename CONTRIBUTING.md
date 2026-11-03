@@ -5,7 +5,7 @@ open an issue first to discuss the change.
 
 ## Building
 
-Rust 1.88 or newer. The crate loads the Blackmagic RAW SDK at runtime, so it builds
+The latest stable Rust. The crate loads the Blackmagic RAW SDK at runtime, so it builds
 without the SDK installed.
 
 ## Testing
