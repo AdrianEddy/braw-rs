@@ -202,14 +202,16 @@ pub(crate) unsafe fn release_before<T: 'static, D: Send + 'static>(object: ComPt
 /// [`begin`](Self::begin) registers waits for these first: exit handlers run in the
 /// reverse order of registration, and this one is registered after the SDK's, since
 /// a release presupposes a codec. On Windows the process's other threads are ended
-/// before any DLL is unloaded, so there is nothing to wait for.
+/// before any DLL is unloaded, so there is nothing to wait for. Under Miri, which
+/// cannot call `atexit`, the releases are counted and nothing is registered: there is
+/// no SDK to unload a plugin.
 struct DeferredRelease;
 
 #[cfg(unix)]
 static DEFERRED_RELEASES: (std::sync::Mutex<usize>, std::sync::Condvar) =
     (std::sync::Mutex::new(0), std::sync::Condvar::new());
 
-#[cfg(unix)]
+#[cfg(all(unix, not(miri)))]
 unsafe extern "C" {
     fn atexit(handler: extern "C" fn()) -> core::ffi::c_int;
 }
@@ -218,11 +220,14 @@ impl DeferredRelease {
     fn begin() -> Self {
         #[cfg(unix)]
         {
-            static AT_EXIT: std::sync::Once = std::sync::Once::new();
-            // SAFETY: registers a plain `extern "C"` function, which stays valid.
-            AT_EXIT.call_once(|| unsafe {
-                atexit(wait_for_deferred_releases);
-            });
+            #[cfg(not(miri))]
+            {
+                static AT_EXIT: std::sync::Once = std::sync::Once::new();
+                // SAFETY: registers a plain `extern "C"` function, which stays valid.
+                AT_EXIT.call_once(|| unsafe {
+                    atexit(wait_for_deferred_releases);
+                });
+            }
             *DEFERRED_RELEASES.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         }
         Self
@@ -243,7 +248,7 @@ impl Drop for DeferredRelease {
 /// The exit handler: wait for the deferred releases still running. Bounded, so a
 /// release the SDK never lets finish cannot hang the exit: one waits
 /// [`RELEASE_TIMEOUT`] for the SDK's references and then destroys the object.
-#[cfg(unix)]
+#[cfg(all(unix, not(miri)))]
 extern "C" fn wait_for_deferred_releases() {
     let (count, done) = &DEFERRED_RELEASES;
     let pending = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
